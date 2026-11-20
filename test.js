@@ -2,6 +2,7 @@
 const assert = require('assert');
 const C = require('./public/shared.js');
 const { Game } = require('./game.js');
+const { BuilderBot, RECIPES } = require('./bot.js');
 
 const run = (g, n) => { for (let i = 0; i < n; i++) g.step(); };
 // Most checks place things back to back, so they skip the builder's recharge timers.
@@ -10,7 +11,7 @@ const started = (pickups) => {
   const g = new Game(); run(g, C.COUNTDOWN_SECONDS * C.FPS); assert.equal(g.phase, 'play');
   if (!pickups) g.lifeTimer = Infinity;
   const place = g.place.bind(g);
-  g.place = (...a) => { g.itemCd = {}; g.brickLock = 0; g.brickCount = 0; return place(...a); };
+  g.place = (...a) => { g.itemCd = {}; return place(...a); };
   return g;
 };
 const rich = () => { const g = started(); g.credits = 9999; return g; };
@@ -390,32 +391,76 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   assert.equal(g.place('fog', 0, 0), null);
 }
 
-// Bricks: after 5 (any mix of block and crumble) both lock for 2 seconds; slow building never locks.
+// Bricks have no wait at all: the route check is what limits them.
 {
   const g = new Game(); run(g, C.COUNTDOWN_SECONDS * C.FPS); g.credits = 999; g.lifeTimer = Infinity;
-  const bricksLeft = () => g.snapshot().bricks;
-  const types = ['block', 'crumble', 'block', 'crumble', 'block'];
-  types.forEach((t, i) => { assert.equal(bricksLeft(), 5 - i); assert.equal(g.place(t, 14 + i, 3), null); });
-  assert.equal(bricksLeft(), 0);
-  assert.equal(g.place('block', 20, 3), 'recharging');
-  assert.equal(g.place('crumble', 20, 3), 'recharging');
-  assert.equal(g.place('ice', 20, 12), null); // other no-wait items are unaffected
-  assert.equal(g.place('spike', 21, 12), null);
-  const s = g.snapshot();
-  assert.equal(s.cds[C.ITEMS.findIndex((i) => i.id === 'block')], 1);
-  assert.equal(s.cds[C.ITEMS.findIndex((i) => i.id === 'crumble')], 1);
-  run(g, 2 * 60 - 1);
-  assert.equal(g.place('block', 20, 3), 'recharging');
-  run(g, 1);
-  assert.equal(bricksLeft(), 5);
-  assert.equal(g.place('block', 20, 3), null);
-  // four more, each just under 2 seconds apart, then a 2-second gap: the count starts over
-  for (let i = 0; i < 3; i++) { run(g, 100); assert.equal(g.place('block', 21 + i, 3), null); }
-  assert.equal(bricksLeft(), 1);
-  run(g, 2 * 60);
-  assert.equal(bricksLeft(), 5);
-  for (let i = 0; i < 5; i++) assert.equal(g.place('crumble', 24 + i, 5), null);
-  assert.equal(g.place('block', 30, 5), 'recharging');
+  for (let i = 0; i < 12; i++) assert.equal(g.place(i % 2 ? 'block' : 'crumble', 14 + i, 3), null);
+  assert.ok(g.snapshot().cds.every((x) => x === 0));
+}
+
+// Spikes count as blocked: a carpet of them can only be as wide as a jump.
+{
+  const g = rich();
+  let n = 0;
+  for (let c = 12; c < 30 && g.place('spike', c, 12) === null; c++) n++;
+  assert.ok(n >= 3 && n <= 6, 'spike carpet width ' + n);
+  assert.equal(g.place('spike', 12 + n, 12), 'would block the path');
+  assert.equal(g.place('spike', 12 + n + 3, 12), null); // further on, with somewhere to land in between, is fine
+  // a stepping stone over the carpet makes room for more
+  assert.equal(g.place('block', 12 + n - 1, 10), null);
+  assert.ok(g.routeOk({}));
+}
+
+// Flame jets count too: fire on top of a wall makes the wall that much taller.
+{
+  const g = rich();
+  assert.equal(g.place('flame', 16, 12), null); // one on the ground can be jumped: 1 block + 2 of fire
+  assert.equal(g.place('block', 22, 12), null);
+  assert.equal(g.place('block', 22, 11), null);
+  assert.equal(g.place('flame', 22, 10), 'would block the path'); // 3 solid + 2 of fire is too tall
+  assert.equal(g.place('flame', 22, 11), 'occupied');
+  assert.equal(g.place('block', 22, 10), null);
+}
+
+// A runner already standing in spikes doesn't switch the check off.
+{
+  const g = rich();
+  g.tiles.set('2,12', { c: 2, r: 12, type: 'spike', spawn: 0, timer: 0 });
+  g.player.invuln = 100;
+  assert.ok(g.routeOk({}));
+  for (let r = 12; r > 8; r--) assert.equal(g.place('block', 14, r), null);
+  assert.equal(g.place('block', 14, 8), 'would block the path');
+}
+
+// A single 4-high wall is always climbable in time, even late with the runner at the screen's left edge.
+{
+  for (const late of [false, true]) for (const atEdge of [false, true]) {
+    const g = rich();
+    if (late) g.timeLeft = 5 * 60;
+    g.player.x = atEdge ? g.camX : g.camX + 100;
+    const c = Math.floor((g.player.x + 5) / 16) + C.MIN_BUILD_DIST_COLS;
+    let h = 0;
+    for (let r = 12; r > 6 && g.place('block', c, r) === null; r--) h++;
+    assert.equal(h, 4, `late=${late} atEdge=${atEdge}`);
+  }
+}
+
+// The check knows the screen keeps scrolling. A runner at the far end of a dead-end
+// tunnel has to walk back out and go over the top: fine from a short tunnel, but from
+// a longer one the screen's left edge gets to the way out first.
+{
+  const escape = (len) => {
+    const g = rich();
+    g.timeLeft = 10 * 60; // late in the round: fast scrolling
+    const a = 20;
+    for (let c = a; c < a + len; c++) g.tiles.set(c + ',10', { c, r: 10, type: 'block', spawn: 0, timer: 0 }); // roof
+    for (const r of [11, 12]) g.tiles.set((a + len - 1) + ',' + r, { c: a + len - 1, r, type: 'block', spawn: 0, timer: 0 }); // dead end
+    g.player.x = (a + len - 2) * 16 + 3; g.player.y = 194;
+    g.camX = g.player.x - 112; // the screen is where it would be had the runner walked in
+    return g.pathExists({}, false);
+  };
+  assert.equal(escape(3), true);
+  assert.equal(escape(6), false);
 }
 
 // Stomping: cannonballs and hoppers die to a stomp, a thorn slime hurts instead.
@@ -459,7 +504,7 @@ for (let round = 0; round < 30; round++) {
     // clean rounds: check when the first one turns up
     let at = -1;
     for (let i = 0; i < 26 * 60 && at < 0; i++) { g.step(); if (g.ents.some((e) => e.type === 'life')) at = i / 60; }
-    assert.ok(at >= 15 && at <= 26, 'first pickup appeared at ' + at + 's');
+    assert.ok(at >= 14.9 && at <= 26, 'first pickup appeared at ' + at + 's'); // 15-25s, give or take a tick
   }
   const life = g.ents.find((e) => e.type === 'life');
   const c = Math.floor(life.x / 16), r = Math.floor(life.y / 16);
@@ -470,6 +515,7 @@ for (let round = 0; round < 30; round++) {
   if (round === 0) {
     g.tiles.clear(); g.ents = [life];
     g.player.lives = 1; g.player.invuln = 50; // can be grabbed even while blinking from a hit
+    g.camX = life.x - 112; // as if the runner had walked there, rather than being put beyond the screen's edge
     g.player.x = life.x; g.player.y = life.y; g.step();
     assert.equal(g.player.lives, 2);
     assert.ok(!g.ents.includes(life));
@@ -558,7 +604,7 @@ for (let round = 0; round < 30; round++) {
   g.setInput(false, true, false, false);
   run(g, 30);
   assert.equal(p.vy, 1.2);
-  assert.equal(g.snapshot().p.ws, 1);
+  assert.equal(g.snapshot().ps[0].ws, 1);
   g.setInput(false, false, false, false); run(g, 10);
   assert.ok(p.vy > 3, 'falls freely once you let go');
 
@@ -566,7 +612,7 @@ for (let round = 0; round < 30; round++) {
   h.setInput(false, false, true, true); h.step();
   for (let i = 0; i < 10; i++) h.step();
   h.setInput(false, false, true, true);
-  for (let i = 0; i < 60; i++) { h.step(); rots.push(h.snapshot().p.rot); }
+  for (let i = 0; i < 60; i++) { h.step(); rots.push(h.snapshot().ps[0].rot); }
   assert.deepEqual([...new Set(rots)], [0, 1, 2, 3].filter((x) => rots.includes(x)));
   assert.ok(rots.includes(1) && rots.includes(2) && rots.includes(3), 'went all the way round: ' + rots.join(''));
   assert.equal(rots[rots.length - 1], 0);
@@ -583,6 +629,170 @@ for (let round = 0; round < 30; round++) {
   assert.ok(g.events.includes('walljump'), 'kicked off the side of the pit');
 }
 
+// ---------- two runners ----------
+const duo = () => {
+  const g = new Game({ runners: 2 }); run(g, C.COUNTDOWN_SECONDS * C.FPS);
+  g.lifeTimer = Infinity; g.credits = 9999;
+  const place = g.place.bind(g);
+  g.place = (...a) => { g.itemCd = {}; return place(...a); };
+  return g;
+};
+
+// Each runner is driven separately and has their own lives and moves.
+{
+  const g = duo();
+  const [a, b] = g.players;
+  assert.ok(a.x !== b.x && !a.out && !b.out);
+  g.setInput(false, true, false, false, 1); // only runner 2 walks right
+  g.setInput(true, false, false, false, 0);
+  run(g, 40);
+  assert.ok(b.vx > 0 && a.vx <= 0);
+  g.players.forEach((p) => p.abil.forEach((x) => { x.unlocked = true; }));
+  assert.equal(g.useAbility(1, 1), true); // runner 2's laser
+  assert.equal(g.useAbility(1, 1), false); // theirs is recharging...
+  assert.equal(g.useAbility(1, 0), true); // ...runner 1's is not
+  const s = JSON.parse(JSON.stringify(g.snapshot()));
+  assert.equal(s.ps.length, 2);
+  assert.deepEqual(s.ps.map((q) => q.ab[1][0]), ['C', 'C']);
+}
+
+// Last one standing: a runner who loses every life is out, the round carries on,
+// and the team still wins if the other lasts. The builder needs both.
+{
+  const g = duo();
+  const [a, b] = g.players;
+  a.lives = 1; a.invuln = 0;
+  g.tiles.set('3,12', { c: 3, r: 12, type: 'spike', spawn: 0, timer: 0 });
+  a.x = 3 * 16 + 3; b.x = 120;
+  g.events = [];
+  g.step();
+  assert.ok(a.out && !b.out);
+  assert.ok(g.events.includes('out0'));
+  assert.equal(g.phase, 'play');
+  assert.equal(g.snapshot().ps[0].out, 1);
+  g.tiles.clear();
+  const ax = a.x;
+  g.setInput(false, true, true, true, 0); run(g, 30);
+  assert.equal(a.x, ax); // someone who is out can't move or be hit any more
+  run(g, C.ROUND_SECONDS * C.FPS);
+  assert.equal(g.winner, 'runner');
+
+  const h = duo();
+  h.players.forEach((p) => { p.lives = 1; p.invuln = 0; });
+  h.pits.add(2); h.pits.add(3); h.pits.add(4); h.pits.add(5);
+  h.players[0].x = 40; h.players[1].x = 70;
+  run(h, 120);
+  assert.equal(h.winner, 'builder');
+  assert.ok(h.players.every((p) => p.out));
+}
+
+// The screen only jumps ahead as far as the runner at the back allows, and its
+// right edge stops the one in front.
+{
+  const g = duo();
+  const [back, front] = g.players; // runner 2 starts a little ahead of runner 1
+  g.setInput(false, true, false, false, 1); // the front one sprints; the other stands still
+  run(g, 240);
+  assert.ok(front.x - g.camX > 200, 'the leader got well ahead on screen: ' + (front.x - g.camX));
+  assert.ok(front.x <= g.camX + 16 * 16 - front.w + 0.01, 'but not off the right edge');
+  assert.ok(back.x >= g.camX, 'and the one behind was not dragged off the left');
+  assert.equal(back.lives, C.LIVES);
+  const cam = g.camX;
+  g.setInput(false, true, false, false, 0); // now both run
+  run(g, 240);
+  assert.ok(g.camX > cam + 200, 'screen follows once both push on');
+}
+
+// The no-build zone and the path check both cover both runners.
+{
+  const g = duo();
+  const [a, b] = g.players;
+  a.x = 200; b.x = 40;
+  const lead = Math.floor(205 / 16);
+  assert.equal(g.place('block', lead + C.MIN_BUILD_DIST_COLS - 1, 12), 'too close to runner');
+  assert.equal(g.place('block', lead + C.MIN_BUILD_DIST_COLS, 12), null);
+  // a 5-high wall between the two of them shuts runner 2 in, even though runner 1 is past it
+  const wall5 = () => { for (let r = 12; r > 8; r--) g.tiles.set('8,' + r, { c: 8, r, type: 'block', spawn: 0, timer: 0 }); return g.routeOk({ tile: { c: 8, r: 8, type: 'block' } }); };
+  assert.equal(wall5(), false);
+  b.out = true;
+  assert.equal(g.routeOk({ tile: { c: 8, r: 8, type: 'block' } }), true); // only runner 1 matters now
+}
+
+// Runners bounce off each other; landing on a team-mate's head springs you up. Nobody is hurt.
+{
+  const g = duo();
+  const [a, b] = g.players;
+  a.x = 100; b.x = 130;
+  g.setInput(false, true, false, false, 0);
+  g.setInput(true, false, false, false, 1);
+  let bumped = false;
+  for (let i = 0; i < 60 && !bumped; i++) { g.events = []; g.step(); bumped = g.events.includes('bump'); }
+  assert.ok(bumped, 'they met');
+  assert.ok(a.vx < 0 && b.vx > 0, 'and flew apart');
+  const gapAtBump = b.x - a.x;
+  run(g, 5);
+  assert.ok(b.x - a.x > gapAtBump + 10, 'the bounce carries even though both still push in');
+
+  const h = duo();
+  const [c, d] = h.players;
+  c.x = 100; d.x = 100; d.y = c.y - 40; d.vy = 2; d.onGround = false; d.coyote = 0;
+  h.setInput(false, false, false, false, 0); h.setInput(false, false, false, false, 1);
+  let top = 999, hit = false;
+  for (let i = 0; i < 50; i++) { h.events = []; h.step(); hit = hit || h.events.includes('bump'); top = Math.min(top, d.y); }
+  assert.ok(hit);
+  assert.ok(top < c.y - d.h - 30, 'sprang well clear of the head, top y=' + top);
+  assert.deepEqual([c.lives, d.lives], [C.LIVES, C.LIVES]);
+}
+
+// ---------- the CPU builder ----------
+// Plays whole rounds against runners who are kept alive, and checks that it stays
+// within the builder's rules, uses a spread of traps, and plays harder later on.
+{
+  assert.ok(RECIPES.every((r) => r.steps.every(([item]) => C.ITEMS.some((i) => i.id === item))), 'recipes only use real items');
+  const playRound = (level, runners) => {
+    const g = new Game({ runners }); g.lifeTimer = Infinity;
+    const bot = new BuilderBot(level);
+    const realPlace = g.place.bind(g);
+    let early = 0, late = 0, refused = 0, minCredits = Infinity, slowest = 0, spent = 0;
+    const earlyItems = new Set(); // what it used in the first 40 seconds
+    g.place = (...args) => {
+      const before = g.credits, why = realPlace(...args);
+      if (why) { refused++; assert.equal(g.credits, before, 'a refusal costs nothing'); }
+      else { const cost = before - g.credits; spent += cost; if (g.timeLeft > 80 * 60) { early += cost; earlyItems.add(args[0]); } else if (g.timeLeft < 40 * 60) late += cost; }
+      return why;
+    };
+    const diffs = [];
+    while (g.phase !== 'over') {
+      for (const p of g.players) { p.lives = C.LIVES; p.out = false; } // keep the round going
+      if (g.tick % 600 === 0) diffs.push(bot.difficulty(g));
+      const t0 = process.hrtime.bigint();
+      bot.think(g); g.step();
+      slowest = Math.max(slowest, Number(process.hrtime.bigint() - t0) / 1e6);
+      minCredits = Math.min(minCredits, g.credits);
+    }
+    return { bot, early, late, refused, minCredits, slowest, diffs, spent, earlyItems, kinds: Object.keys(bot.placed).length, total: Object.values(bot.placed).reduce((x, y) => x + y, 0) };
+  };
+  const rounds = [playRound(1, 1), playRound(1, 2), playRound(1, 2)];
+  const sum = (k) => rounds.reduce((n, r) => n + r[k], 0);
+  for (const r of rounds) {
+    assert.ok(r.minCredits >= 0, 'never overspends');
+    assert.ok(r.total >= 15, 'builds a fair amount: ' + r.total);
+    assert.ok(r.diffs.every((d, i) => i === 0 || d >= r.diffs[i - 1]) && r.diffs[r.diffs.length - 1] > r.diffs[0] + 0.3, 'gets harder through the round: ' + r.diffs.map((d) => d.toFixed(2)));
+  }
+  assert.ok(Math.max(...rounds.map((r) => r.kinds)) >= 7, 'uses a spread of items: ' + rounds.map((r) => r.kinds));
+  assert.ok(sum('late') > sum('early') * 1.15, `spends more in the last 40 seconds than the first 40: ${sum('early')} credits then ${sum('late')}`);
+  const hard = playRound(6, 2);
+  assert.ok(hard.diffs[0] >= rounds[0].diffs[0] + 0.4, 'a higher level starts harder');
+  // the nastier traps are held back at level 1 until late in the round; a high level opens with them
+  const nasty = ['flame', 'thorn', 'mine', 'spring', 'ghost', 'wind', 'fog'];
+  for (const r of rounds) assert.ok(!nasty.some((i) => r.earlyItems.has(i)), 'level 1 keeps it simple early: ' + [...r.earlyItems]);
+  const hardEarly = new Set([...hard.earlyItems, ...playRound(6, 1).earlyItems, ...playRound(6, 2).earlyItems]); // three rounds, since which traps it picks is down to chance
+  assert.ok(nasty.some((i) => hardEarly.has(i)), 'level 6 does not: ' + [...hardEarly]);
+  console.log(`CPU builder, level 1: ${Math.round(sum('total') / 3)} placements and ${Math.round(sum('spent') / 3)} credits a round, ${rounds.map((r) => r.kinds).join('/')} kinds of item; level 6: ${hard.total} placements, ${hard.spent} credits, ${hard.kinds} kinds. Slowest tick ${Math.max(hard.slowest, ...rounds.map((r) => r.slowest)).toFixed(1)}ms`);
+  console.log('  level 1 used:', JSON.stringify(rounds[1].bot.placed));
+  console.log('  level 6 used:', JSON.stringify(hard.bot.placed));
+}
+
 // Snapshot is plain JSON.
 {
   const g = started();
@@ -591,6 +801,6 @@ for (let round = 0; round < 30; round++) {
   const s = JSON.parse(JSON.stringify(g.snapshot()));
   assert.equal(s.t, 'state');
   assert.equal(s.ents.length, 2);
-  assert.equal(s.ab.length, 4);
+  assert.equal(s.ps[0].ab.length, 4);
 }
 console.log('all checks passed');

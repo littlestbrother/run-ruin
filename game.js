@@ -19,6 +19,9 @@ const WALL_JUMP_V = -5.0;
 const WALL_KICK_TICKS = 8; // after kicking off a wall, steering is ignored this long so the kick carries
 const WALL_GRACE_TICKS = 6; // a wall still counts for this long after letting go of it
 const WALL_SLIDE_V = 1.2; // fall speed while pressing into a wall
+const PLAYER_BOUNCE = 2.2; // sideways speed two runners fly apart at
+const PLAYER_BOUNCE_TICKS = 7; // steering is ignored this long so the bounce carries
+const PLAYER_HEAD_BOUNCE = -5.2; // landing on a team-mate's head
 const FLY_SPEED = 2.4;
 const EXPLODE_RADIUS = 52;
 const CAMERA_LEAD = 112; // runner's furthest screen x before the camera follows
@@ -27,7 +30,8 @@ const SCROLL_END = 0.9;
 const MAX_ENTS = 80;
 
 // The "can the runner still get through?" check plays out real jumps, but with
-// a slower run than the runner really has, so any route it finds has slack.
+// a slower run than the runner really has, so any route it finds has slack:
+// room to spare on jump distance, and time to spare against the scrolling screen.
 const ROUTE_RUN_MAX = 1.3;
 const ROUTE_NODE_BUDGET = 300;
 const ROUTE_GRID_COLS = C.BUILDER_COLS + 8;
@@ -35,8 +39,6 @@ const GOAL = Symbol('goal');
 
 const SOLID_TILES = { block: true, crumble: true, cannon: true, flame: true };
 const FLOOR_TILES = { spike: true, mine: true, spring: true, ice: true, goo: true }; // must sit on something solid
-const BRICK = Object.fromEntries(C.BRICKS.items.map((id) => [id, true]));
-const BRICK_LOCK_TICKS = C.BRICKS.cooldown * C.FPS;
 const ENT_ITEMS = { slime: true, bat: true, saw: true, crusher: true, ghost: true, hopper: true, thorn: true };
 const STOMPABLE = Object.fromEntries(C.STOMPABLE.map((t) => [t, true])); // land on top to destroy
 const WIND_PUSH = 0.7;
@@ -62,7 +64,8 @@ const ROUTE_MOVES = (() => {
 })();
 
 class Game {
-  constructor() {
+  // opts.runners: 1 (default) or 2 runners on the same team
+  constructor(opts = {}) {
     this.phase = 'countdown'; // countdown -> play -> over
     this.countdown = C.COUNTDOWN_SECONDS * C.FPS;
     this.tick = 0;
@@ -79,24 +82,44 @@ class Game {
     this.nextId = 1;
     this.events = [];
     this.winner = null;
-    this.input = { l: false, r: false, j: false };
     this.lifeTimer = randTicks(C.LIFE_FIRST_SECONDS); // ticks of play until the next +1 pickup
-    this.brickCount = 0; // bricks placed in the current burst
-    this.brickIdle = 0; // ticks since the last brick
-    this.brickLock = 0; // ticks until bricks can be placed again
     this.itemCd = {}; // item id -> ticks until the builder may place it again
     this.wind = 0; // ticks of headwind left
     this.fog = 0; // ticks of fog left
-    this.aim = null; // where the runner's mouse is on their screen, for flying
-    this.abil = C.ABILITIES.map(() => ({ unlocked: false, active: 0, cd: 0 }));
-    this.player = {
-      x: 40, y: GROUND_Y - 14, w: 10, h: 14, vx: 0, vy: 0,
+    this.players = [];
+    for (let i = 0; i < (opts.runners === 2 ? 2 : 1); i++) this.players.push(this.makePlayer(i));
+  }
+
+  makePlayer(index) {
+    return {
+      index, out: false, // out = lost their last life; the round goes on while a team-mate survives
+      x: 40 + index * 24, y: GROUND_Y - 14, w: 10, h: 14, vx: 0, vy: 0,
       onGround: true, facing: 1, airJumps: 1, coyote: 0, jumpBuf: 0,
       invuln: 0, lives: C.LIVES, launch: 0,
       lastWall: null, // column of the wall last kicked off; cleared on landing
       wallLock: 0, sliding: 0, spin: null,
       wallSide: 0, wallCol: 0, wallGrace: 0, // the wall being touched, or touched a moment ago
+      input: { l: false, r: false, j: false },
+      aim: null, // where this runner's mouse is on their screen, for flying
+      abil: C.ABILITIES.map(() => ({ unlocked: false, active: 0, cd: 0 })),
     };
+  }
+
+  // The first runner, for the many places (and tests) that only deal with one.
+  get player() { return this.players[0]; }
+  get abil() { return this.players[0].abil; }
+
+  alive() { return this.players.filter((p) => !p.out); }
+
+  // The runner still in play whose centre is closest to x (or to the point x, y).
+  nearest(x, y) {
+    let best = null, bd = Infinity;
+    for (const p of this.players) {
+      if (p.out) continue;
+      const d = y === undefined ? Math.abs(p.x + p.w / 2 - x) : Math.hypot(p.x + p.w / 2 - x, p.y + p.h / 2 - y);
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best || this.players[0];
   }
 
   // ---------- world queries ----------
@@ -144,24 +167,41 @@ class Game {
   }
 
   // ---------- route check: can the runner still get past everything? ----------
+  //
+  // Before a block, cannon, flame jet, spike or pit is accepted, the server
+  // looks for a way from the runner to the far side of the builder's area by
+  // playing out real runs and jumps. A route only counts if it
+  //   - needs nothing beyond running and the double jump,
+  //   - never touches spikes or the fire column of a flame jet, and
+  //   - stays ahead of the scrolling left edge of the screen the whole way.
 
-  // A copy of the solid tiles the builder can reach, with one optional change
-  // applied, that shares the real collision code.
+  // A copy of what the builder can reach, with one optional change applied.
+  // It shares the real collision code, and also knows which cells burn.
   routeWorld(change, withoutCrumbles) {
     const c0 = Math.floor(this.camX / T) - 2;
     const n = ROUTE_GRID_COLS, R = C.ROWS;
-    const g = new Uint8Array(n * R);
+    const g = new Uint8Array(n * R); // solid cells
+    const hot = new Uint8Array(n * R); // 1 = spikes (lower half of the cell), 2 = flame (full height)
     for (let i = 0; i < n; i++) {
       if (this.pits.has(c0 + i) || (change.pits && change.pits.includes(c0 + i))) continue;
       for (let r = C.GROUND_ROW; r < R; r++) g[i * R + r] = 1;
     }
+    const flames = [];
     const put = (t) => {
-      if (!SOLID_TILES[t.type] || (withoutCrumbles && t.type === 'crumble')) return;
       const i = t.c - c0;
-      if (i >= 0 && i < n) g[i * R + t.r] = 1;
+      if (i < 0 || i >= n) return;
+      if (t.type === 'spike') hot[i * R + t.r] = 1;
+      if (!SOLID_TILES[t.type] || (withoutCrumbles && t.type === 'crumble')) return;
+      g[i * R + t.r] = 1;
+      if (t.type === 'flame') flames.push(t);
     };
     for (const t of this.tiles.values()) put(t);
     if (change.tile) put(change.tile);
+    // Fire reaches up to two open cells above each jet. It is treated as always lit.
+    for (const t of flames) {
+      const i = t.c - c0;
+      for (let h = 1; h <= 2 && t.r - h >= 0 && !g[i * R + t.r - h]; h++) hot[i * R + t.r - h] = 2;
+    }
     return {
       solidAt(c, r) {
         if (r < 0 || r >= R) return false;
@@ -170,16 +210,41 @@ class Game {
         if (i >= n) return r >= C.GROUND_ROW; // untouched ground beyond the builder's reach
         return g[i * R + r] === 1;
       },
+      hurts(b) {
+        const ca = Math.floor(b.x / T), cb = Math.floor((b.x + b.w - 0.001) / T);
+        const ra = Math.floor(b.y / T), rb = Math.floor((b.y + b.h - 0.001) / T);
+        for (let c = ca; c <= cb; c++) for (let r = ra; r <= rb; r++) {
+          const i = c - c0;
+          if (i < 0 || i >= n || r < 0 || r >= R) continue;
+          const kind = hot[i * R + r];
+          if (!kind || b.x >= c * T + 13 || b.x + b.w <= c * T + 3) continue; // both are 10 pixels wide, centred
+          if (kind === 2 || b.y + b.h > r * T + 8) return true;
+        }
+        return false;
+      },
       collides: Game.prototype.collides,
       moveBody: Game.prototype.moveBody,
     };
   }
 
-  // Plays one move with the runner's physics. Returns where the runner comes
-  // to rest, GOAL if they get clear of the builder's area, or null if they die.
-  routeMove(world, x, y, dir, hold, jump, d2, minX, goalX) {
-    const b = { x, y, w: 10, h: 14, vx: 0, vy: jump ? JUMP_V : 0, onGround: false };
-    let landed = false;
+  // How fast the screen will be scrolling `t` ticks from now.
+  scrollForecast() {
+    const total = C.ROUND_SECONDS * C.FPS;
+    const elapsed = this.phase === 'countdown' ? -this.countdown : total - this.timeLeft;
+    return (t) => {
+      const e = elapsed + t;
+      return e <= 0 ? 0 : SCROLL_START + (SCROLL_END - SCROLL_START) * Math.min(1, e / total);
+    };
+  }
+
+  // Plays one move with the runner's physics, starting from a standing spot
+  // `node` = { x, y, t: ticks from now, cam: where the screen's left edge is by
+  // then, hot: standing in a hazard }. Returns the spot the runner comes to
+  // rest at, GOAL if they get clear of the builder's area, or null if they die.
+  routeMove(world, node, dir, hold, jump, d2, goalX, speedAt) {
+    const b = { x: node.x, y: node.y, w: 10, h: 14, vx: 0, vy: jump ? JUMP_V : 0, onGround: false };
+    let landed = false, cam = node.cam;
+    let immune = node.hot; // a runner already standing in spikes isn't doomed by them; they just have to get out
     for (let f = 0; f < 420; f++) {
       const want = !landed && f < hold ? dir : 0;
       if (want < 0) b.vx = Math.max(b.vx - RUN_ACC, -ROUTE_RUN_MAX);
@@ -189,11 +254,18 @@ class Game {
       if (jump && !landed && f === d2) b.vy = DOUBLE_JUMP_V;
       b.vy = Math.min(b.vy + GRAVITY, MAX_FALL);
       world.moveBody(b);
-      if (b.x < minX || b.y > C.ROWS * T) return null;
+
+      // The screen keeps scrolling, follows the runner when they push ahead,
+      // shoves them along from behind, and crushes them against anything solid.
+      cam += speedAt(node.t + f);
+      if (b.x - CAMERA_LEAD > cam) cam = b.x - CAMERA_LEAD;
+      if (b.x < cam) { b.x = cam; if (world.collides(b)) return null; }
+      if (b.y > C.ROWS * T) return null;
+      if (world.hurts(b)) { if (!immune) return null; } else immune = false;
       if (b.x >= goalX) return GOAL;
       if (b.onGround) {
         if (jump || f >= hold) landed = true;
-        if (b.vx === 0 && f > 0) return b;
+        if (b.vx === 0 && f > 0) return { x: b.x, y: b.y, t: node.t + f + 1, cam, hot: immune };
       }
     }
     return null;
@@ -202,18 +274,21 @@ class Game {
   // Searches standing spots reachable from `start` (default: the runner).
   pathExists(change, withoutCrumbles, start) {
     const world = this.routeWorld(change, withoutCrumbles);
-    const minX = this.camX;
+    const speedAt = this.scrollForecast();
     const goalX = (Math.floor(this.camX / T) + C.BUILDER_COLS + 1) * T; // first column the builder has never been able to touch
     const from = start || this.player;
-    const open = [], seen = new Set();
+    const open = [], seen = new Map(); // spot -> earliest arrival found so far
     const add = (b) => {
       if (!b || b === GOAL) return;
       const k = Math.round(b.x / 8) + ',' + Math.round(b.y);
-      if (!seen.has(k)) { seen.add(k); open.push({ x: b.x, y: b.y }); }
+      const before = seen.get(k);
+      if (before !== undefined && b.t > before - 30) return; // already got here about as early
+      seen.set(k, b.t);
+      open.push(b);
     };
-    const sx = Math.max(from.x, minX);
+    const origin = { x: Math.max(from.x, this.camX), y: from.y, t: 0, cam: this.camX, hot: true };
     for (const [dir, hold] of [[0, 0], [1, 30], [-1, 30]]) {
-      const b = this.routeMove(world, sx, from.y, dir, hold, false, -1, minX, goalX);
+      const b = this.routeMove(world, origin, dir, hold, false, -1, goalX, speedAt);
       if (b === GOAL) return true;
       add(b);
       if (open.length) break; // already standing somewhere; no need to try drifting
@@ -226,7 +301,7 @@ class Game {
       open[best] = open[open.length - 1];
       open.pop();
       for (const [dir, hold, jump, d2] of ROUTE_MOVES) {
-        const b = this.routeMove(world, node.x, node.y, dir, hold, jump, d2, minX, goalX);
+        const b = this.routeMove(world, node, dir, hold, jump, d2, goalX, speedAt);
         if (b === GOAL) return true;
         add(b);
       }
@@ -236,43 +311,51 @@ class Game {
 
   // A crumble block may be there or gone by the time the runner arrives, so
   // the route has to work both ways.
+  // And it has to work for every runner still in play.
   routeOk(change) {
-    if (!this.pathExists(change, false)) return false;
     let crumbles = change.tile && change.tile.type === 'crumble';
     if (!crumbles) for (const t of this.tiles.values()) if (t.type === 'crumble') { crumbles = true; break; }
-    return !crumbles || this.pathExists(change, true);
+    for (const p of this.alive()) {
+      if (!this.pathExists(change, false, p)) return false;
+      if (crumbles && !this.pathExists(change, true, p)) return false;
+    }
+    return true;
   }
 
   // ---------- inputs from the two players ----------
 
-  setInput(l, r, j, pressed) {
-    this.input.l = !!l;
-    this.input.r = !!r;
-    this.input.j = !!j;
-    if (pressed) this.player.jumpBuf = 7;
+  // `who` is the runner's index (0 or 1).
+  setInput(l, r, j, pressed, who = 0) {
+    const p = this.players[who];
+    if (!p) return;
+    p.input.l = !!l;
+    p.input.r = !!r;
+    p.input.j = !!j;
+    if (pressed) p.jumpBuf = 7;
   }
 
-  setAim(x, y) {
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    this.aim = { x: Math.max(0, Math.min(VIEW_W, x)), y: Math.max(0, Math.min(C.ROWS * T, y)) };
+  setAim(x, y, who = 0) {
+    const p = this.players[who];
+    if (!p || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    p.aim = { x: Math.max(0, Math.min(VIEW_W, x)), y: Math.max(0, Math.min(C.ROWS * T, y)) };
   }
 
   // Returns true if the move fired.
-  useAbility(i) {
-    const def = C.ABILITIES[i], a = this.abil[i];
-    if (!def || this.phase !== 'play' || !a.unlocked || a.cd > 0 || a.active > 0) return false;
+  useAbility(i, who = 0) {
+    const p = this.players[who];
+    const def = C.ABILITIES[i], a = p && p.abil[i];
+    if (!def || !a || p.out || this.phase !== 'play' || !a.unlocked || a.cd > 0 || a.active > 0) return false;
     a.active = def.duration * C.FPS;
     a.cd = (def.duration + def.cooldown) * C.FPS;
-    const p = this.player;
     if (def.id === 'triple') { p.airJumps++; this.events.push('power'); }
-    else if (def.id === 'laser') this.fireLaser();
-    else if (def.id === 'explode') this.explode();
+    else if (def.id === 'laser') this.fireLaser(p);
+    else if (def.id === 'explode') this.explode(p);
     else if (def.id === 'fly') { p.vy = Math.min(p.vy, 0); this.events.push('power'); }
     return true;
   }
 
-  fireLaser() {
-    const p = this.player, dir = p.facing;
+  fireLaser(p) {
+    const dir = p.facing;
     const y = p.y + 3;
     const row = Math.floor((y + 2) / T);
     const startX = dir > 0 ? p.x + p.w : p.x;
@@ -296,8 +379,7 @@ class Game {
     this.events.push('laser');
   }
 
-  explode() {
-    const p = this.player;
+  explode(p) {
     const cx = p.x + p.w / 2, cy = p.y + p.h / 2;
     for (const [k, t] of this.tiles) {
       if (Math.hypot(t.c * T + T / 2 - cx, t.r * T + T / 2 - cy) <= EXPLODE_RADIUS) this.tiles.delete(k);
@@ -317,10 +399,9 @@ class Game {
     if (!item || !Number.isInteger(c) || !Number.isInteger(r)) return 'bad request';
     if (this.phase === 'over') return 'round over';
     if (this.credits < item.cost) return 'not enough credits';
-    if (this.itemCd[itemId] > 0 || (BRICK[itemId] && this.brickLock > 0)) return 'recharging';
+    if (this.itemCd[itemId] > 0) return 'recharging';
     let wait = item.cooldown;
     const camCol = Math.floor(this.camX / T);
-    const p = this.player;
 
     if (itemId === 'wind' || itemId === 'fog') {
       // Whole-screen effects: where the builder clicks doesn't matter.
@@ -340,8 +421,9 @@ class Game {
     } else {
       // The builder's picture shows a sliver of one more column at its right edge; that one counts too.
       if (c < camCol || c > camCol + C.BUILDER_COLS) return 'out of range';
-      const playerCol = Math.floor((p.x + p.w / 2) / T);
-      if (c < playerCol + C.MIN_BUILD_DIST_COLS) return 'too close to runner';
+      // measured from whichever runner is furthest ahead, so nothing lands on or behind either of them
+      const leadCol = Math.max(...this.alive().map((p) => Math.floor((p.x + p.w / 2) / T)));
+      if (c < leadCol + C.MIN_BUILD_DIST_COLS) return 'too close to runner';
 
       if (itemId === 'pit') {
         // One click digs two columns. If that would be too wide to jump, dig one.
@@ -364,7 +446,7 @@ class Game {
           this.ents.push(e);
         } else {
           if (FLOOR_TILES[itemId] && !this.solidAt(c, r + 1)) return 'needs a floor under it';
-          if (SOLID_TILES[itemId] && this.wouldBlock({ tile: { c, r, type: itemId } })) return 'would block the path';
+          if ((SOLID_TILES[itemId] || itemId === 'spike') && this.wouldBlock({ tile: { c, r, type: itemId } })) return 'would block the path';
           this.tiles.set(key(c, r), { c, r, type: itemId, spawn: C.SPAWN_TICKS, timer: 0, fire: 60, age: 0, on: 0, warm: false });
         }
       }
@@ -372,10 +454,6 @@ class Game {
     }
     this.credits -= item.cost;
     if (wait > 0) this.itemCd[itemId] = wait * C.FPS;
-    if (BRICK[itemId]) {
-      this.brickIdle = 0;
-      if (++this.brickCount >= C.BRICKS.burst) this.brickLock = BRICK_LOCK_TICKS;
-    }
     return null;
   }
 
@@ -426,8 +504,6 @@ class Game {
     if (this.phase === 'over') return;
     this.tick++;
     for (const id in this.itemCd) if (this.itemCd[id] > 0) this.itemCd[id]--;
-    if (this.brickLock > 0) { if (--this.brickLock === 0) this.brickCount = 0; }
-    else if (this.brickCount > 0 && ++this.brickIdle >= BRICK_LOCK_TICKS) this.brickCount = 0; // slow building never locks
     if (this.phase === 'countdown') {
       this.countdown--;
       if (this.countdown <= 0) { this.phase = 'play'; this.events.push('go'); }
@@ -449,17 +525,24 @@ class Game {
       if (--this.lifeTimer <= 0) this.lifeTimer = this.spawnLife() ? randTicks(C.LIFE_EVERY_SECONDS) : C.FPS;
       if (this.fog > 0) this.fog--;
 
-      this.abil.forEach((a, i) => {
-        if (!a.unlocked && secs >= C.ABILITIES[i].unlock) { a.unlocked = true; this.events.push('unlock' + i); }
-        if (a.active > 0) a.active--;
-        if (a.cd > 0) a.cd--;
-      });
+      for (const p of this.players) {
+        p.abil.forEach((a, i) => {
+          if (!a.unlocked && secs >= C.ABILITIES[i].unlock) { a.unlocked = true; if (p.index === 0) this.events.push('unlock' + i); }
+          if (a.active > 0) a.active--;
+          if (a.cd > 0) a.cd--;
+        });
+      }
 
       const progress = 1 - this.timeLeft / (C.ROUND_SECONDS * C.FPS);
       this.camX += SCROLL_START + (SCROLL_END - SCROLL_START) * progress;
     }
 
-    this.stepPlayer();
+    for (const p of this.players) if (!p.out) this.stepPlayer(p);
+    this.bumpPlayers();
+    // The screen never moves backwards. It jumps ahead only as far as the runner
+    // furthest behind allows, so nobody is dragged off by a faster team-mate.
+    const lead = Math.min(...this.alive().map((p) => p.x - CAMERA_LEAD));
+    if (lead > this.camX) this.camX = lead;
     this.stepTiles();
     this.stepEnts();
     this.cleanup();
@@ -486,27 +569,53 @@ class Game {
   }
 
   // A somersault, shown in quarter turns. `dir` is 1 for clockwise.
-  startSpin(turns, dir) {
-    this.player.spin = { t: 0, total: turns > 1 ? 26 : 18, turns, dir };
+  startSpin(p, turns, dir) {
+    p.spin = { t: 0, total: turns > 1 ? 26 : 18, turns, dir };
   }
 
-  maxAirJumps() {
-    return this.abil[ABILITY_INDEX.triple].active > 0 ? 2 : 1;
+  maxAirJumps(p) {
+    return p.abil[ABILITY_INDEX.triple].active > 0 ? 2 : 1;
   }
 
-  stepPlayer() {
-    const p = this.player, inp = this.input;
+  // Two runners can't stand in the same place: they bounce off each other.
+  // Landing on a team-mate's head springs you up like a stomp, and costs them nothing.
+  bumpPlayers() {
+    const [a, b] = this.players;
+    if (!b || a.out || b.out || !overlap(a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h)) return;
+    const dx = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const dy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    const top = a.y < b.y ? a : b, bottom = top === a ? b : a;
+    if (dy < dx && top.vy - bottom.vy > 0.5) {
+      // one came down on the other
+      top.y = bottom.y - top.h;
+      top.vy = PLAYER_HEAD_BOUNCE; top.launch = 10; top.airJumps = this.maxAirJumps(top);
+      if (!bottom.onGround) bottom.vy = Math.max(bottom.vy, 1.5);
+    } else {
+      // side on: shove each half the overlap apart (unless a wall is in the way) and send them flying back
+      const left = a.x + a.w / 2 <= b.x + b.w / 2 ? a : b, right = left === a ? b : a;
+      for (const [q, dir] of [[left, -1], [right, 1]]) {
+        q.x += dir * (dx / 2 + 0.5);
+        if (this.collides(q)) q.x -= dir * (dx / 2 + 0.5);
+        q.vx = dir * PLAYER_BOUNCE; q.wallLock = PLAYER_BOUNCE_TICKS;
+        if (q.onGround) { q.vy = -1.8; q.onGround = false; } // a little hop so the bounce reads
+      }
+    }
+    this.events.push('bump');
+  }
+
+  stepPlayer(p) {
+    const inp = p.input;
     const prevBottom = p.y + p.h;
-    const flying = this.abil[ABILITY_INDEX.fly].active > 0;
+    const flying = p.abil[ABILITY_INDEX.fly].active > 0;
     if (p.spin && (++p.spin.t >= p.spin.total || p.onGround || flying)) p.spin = null;
     p.sliding = 0;
 
     if (flying) {
       // Glide toward the mouse pointer; gravity is off.
       let dx = 0, dy = 0;
-      if (this.aim) {
-        dx = this.camX + this.aim.x - (p.x + p.w / 2);
-        dy = this.aim.y - (p.y + p.h / 2);
+      if (p.aim) {
+        dx = this.camX + p.aim.x - (p.x + p.w / 2);
+        dy = p.aim.y - (p.y + p.h / 2);
       }
       const clamp = (v) => Math.max(-FLY_SPEED, Math.min(FLY_SPEED, v / 4));
       const tx = clamp(dx), ty = clamp(dy);
@@ -530,7 +639,7 @@ class Game {
       else if (p.vx > 0) p.vx = Math.max(0, p.vx - friction);
       else if (p.vx < 0) p.vx = Math.min(0, p.vx + friction);
 
-      if (p.onGround) { p.coyote = 6; p.airJumps = this.maxAirJumps(); p.lastWall = null; } else if (p.coyote > 0) p.coyote--;
+      if (p.onGround) { p.coyote = 6; p.airJumps = this.maxAirJumps(p); p.lastWall = null; } else if (p.coyote > 0) p.coyote--;
       const wall = p.onGround || p.coyote > 0 ? 0 : this.wallBeside(p);
       if (p.onGround) p.wallGrace = 0;
       else if (wall) {
@@ -548,12 +657,12 @@ class Game {
           // Wall jump: a free extra jump up and away, but never off the same wall twice running.
           p.vy = WALL_JUMP_V; p.vx = -kick * RUN_MAX; p.facing = -kick;
           p.wallLock = WALL_KICK_TICKS; p.launch = 14; p.lastWall = p.wallCol; p.wallGrace = 0; p.jumpBuf = 0;
-          this.startSpin(1, -kick);
+          this.startSpin(p, 1, -kick);
           this.fx.push({ k: 'puff', a: r1(kick < 0 ? p.x : p.x + p.w), b: r1(p.y + p.h - 2), c: kick, ttl: 12 });
           this.events.push('walljump');
         } else if (p.airJumps > 0) {
           p.vy = DOUBLE_JUMP_V; p.airJumps--; p.jumpBuf = 0;
-          this.startSpin(p.airJumps === 0 && this.maxAirJumps() === 2 ? 2 : 1, p.facing); // the triple jump is a double somersault
+          this.startSpin(p, p.airJumps === 0 && this.maxAirJumps(p) === 2 ? 2 : 1, p.facing); // the triple jump is a double somersault
           this.events.push('jump2');
         } else p.jumpBuf--;
       }
@@ -571,9 +680,8 @@ class Game {
       if (this.collides(p)) p.x += WIND_PUSH;
     }
     if (p.invuln > 0) p.invuln--;
-
-    // The camera never moves backwards, and follows the runner if they push ahead.
-    if (p.x - CAMERA_LEAD > this.camX) this.camX = p.x - CAMERA_LEAD;
+    // With a team-mate holding the screen back, its right edge is a wall.
+    if (p.x > this.camX + VIEW_W - p.w) { p.x = this.camX + VIEW_W - p.w; if (p.vx > 0) p.vx = 0; }
 
     // Standing on a crumble block starts it breaking.
     if (p.onGround) {
@@ -585,10 +693,10 @@ class Game {
     }
 
     // Fell in a pit, or got shoved off the left edge of the screen.
-    if (p.y > C.ROWS * T + 16) return this.loseLife(true);
+    if (p.y > C.ROWS * T + 16) return this.loseLife(p, true);
     if (p.x < this.camX) {
       p.x = this.camX;
-      if (this.collides(p)) return this.loseLife(true);
+      if (this.collides(p)) return this.loseLife(p, true);
     }
 
     // Touching a spring from above throws the runner into the air.
@@ -598,7 +706,7 @@ class Game {
       for (let c = c0; c <= c1; c++) for (let r = r0; r <= r1_; r++) {
         const t = this.tiles.get(key(c, r));
         if (t && t.type === 'spring' && t.spawn === 0 && overlap(p.x, p.y, p.w, p.h, c * T + 2, r * T + 8, 12, 8)) {
-          p.vy = SPRING_V; p.launch = 45; p.airJumps = this.maxAirJumps();
+          p.vy = SPRING_V; p.launch = 45; p.airJumps = this.maxAirJumps(p);
           t.timer = 12;
           this.events.push('boing');
         }
@@ -619,7 +727,7 @@ class Game {
     for (let c = c0; c <= c1; c++) for (let r = r0; r <= r1_; r++) {
       const t = this.tiles.get(key(c, r));
       if (t && t.type === 'spike' && t.spawn === 0 &&
-          overlap(p.x, p.y, p.w, p.h, c * T + 3, r * T + 8, 10, 8)) return this.loseLife(false);
+          overlap(p.x, p.y, p.w, p.h, c * T + 3, r * T + 8, 10, 8)) return this.loseLife(p, false);
     }
 
     for (const e of this.ents) {
@@ -628,30 +736,34 @@ class Game {
       if (STOMPABLE[e.type] && p.vy > 0 && prevBottom <= e.y + 7) {
         e.dead = true;
         p.vy = -4.5;
-        p.airJumps = this.maxAirJumps();
+        p.airJumps = this.maxAirJumps(p);
         this.events.push('stomp');
       } else {
-        return this.loseLife(false);
+        return this.loseLife(p, false);
       }
     }
   }
 
-  loseLife(respawn) {
-    const p = this.player;
+  loseLife(p, respawn) {
     if (this.phase === 'play' && (p.invuln === 0 || respawn)) {
       // A pit while already blinking from a hit still costs a life: pits are always deadly.
       p.lives--;
       this.events.push('hurt');
-      if (p.lives <= 0) { p.lives = 0; return this.finish('builder'); }
+      if (p.lives <= 0) {
+        // Out for the rest of the round. The builder only wins once every runner is out.
+        p.lives = 0; p.out = true;
+        this.events.push('out' + p.index);
+        if (!this.alive().length) this.finish('builder');
+        return;
+      }
     }
     p.invuln = 120;
-    if (respawn) this.respawn(); else p.vy = -3.5;
+    if (respawn) this.respawn(p); else p.vy = -3.5;
   }
 
   // Back onto solid ground near the left of the screen, preferring a spot the
   // runner can actually carry on from.
-  respawn() {
-    const p = this.player;
+  respawn(p) {
     const start = Math.floor(this.camX / T) + 3;
     p.vx = 0; p.vy = 0; p.wallLock = 0; p.wallGrace = 0; p.spin = null; p.lastWall = null;
     let fallback = null;
@@ -667,7 +779,6 @@ class Game {
   }
 
   stepTiles() {
-    const p = this.player;
     for (const [k, t] of this.tiles) {
       if (t.spawn > 0) { t.spawn--; continue; }
       if (t.type === 'crumble' && t.timer > 0) {
@@ -687,25 +798,29 @@ class Game {
           while (t.on < 2 && t.r - t.on - 1 >= 0 && !this.solidAt(t.c, t.r - t.on - 1)) t.on++;
           const x = t.c * T;
           if (ph === FLAME_ON_AT && x > this.camX - T && x < this.camX + VIEW_W) this.events.push('flame');
-          if (t.on && p.invuln === 0 && this.phase !== 'over' &&
-              overlap(p.x, p.y, p.w, p.h, x + 3, (t.r - t.on) * T, 10, t.on * T)) this.loseLife(false);
+          if (t.on) for (const p of this.alive()) {
+            if (p.invuln === 0 && this.phase !== 'over' &&
+                overlap(p.x, p.y, p.w, p.h, x + 3, (t.r - t.on) * T, 10, t.on * T)) this.loseLife(p, false);
+          }
         }
       } else if (t.type === 'mine') {
         t.age++;
         const mx = t.c * T + 8, my = t.r * T + 12;
-        const d = Math.hypot(mx - (p.x + p.w / 2), my - (p.y + p.h / 2));
+        const dist = (p) => Math.hypot(mx - (p.x + p.w / 2), my - (p.y + p.h / 2));
+        const d = dist(this.nearest(mx, my));
         if (t.timer > 0) {
           if (--t.timer === 0) {
             this.tiles.delete(k);
             this.fx.push({ k: 'boom', a: mx, b: my, c: 30, ttl: 16 });
             this.events.push('boom');
-            if (d < 30 && p.invuln === 0 && this.phase !== 'over') this.loseLife(false);
+            for (const p of this.alive()) if (dist(p) < 30 && p.invuln === 0 && this.phase !== 'over') this.loseLife(p, false);
           }
         } else if (d < 22) { t.timer = 18; this.events.push('warn'); } // shows itself and beeps before it blows
       } else if (t.type === 'cannon' && this.phase === 'play') {
         const x = t.c * T;
         if (x > this.camX - T && x < this.camX + VIEW_W + T && --t.fire <= 0) {
           t.fire = 110;
+          const p = this.nearest(x + T / 2);
           const dir = p.x + p.w / 2 < x + T / 2 ? -1 : 1;
           if (this.ents.length < MAX_ENTS) {
             this.ents.push({ id: this.nextId++, type: 'bullet', x: dir < 0 ? x - 13 : x + T + 1, y: t.r * T + 2, w: 12, h: 12, vx: dir * 1.9, vy: 0, spawn: 0, t: 0 });
@@ -738,8 +853,8 @@ class Game {
         if (this.moveBody(e)) { e.dead = true; this.events.push('break'); }
         if (e.onGround && !e.rolling) { e.rolling = true; this.events.push('thud'); } // lands, then rolls back toward the runner
       } else if (e.type === 'hopper') {
-        // Sits a moment, then leaps toward the runner.
-        const p = this.player;
+        // Sits a moment, then leaps toward the nearest runner.
+        const p = this.nearest(e.x + e.w / 2);
         e.vy = Math.min(e.vy + GRAVITY, MAX_FALL);
         if (e.onGround) {
           e.vx = 0;
@@ -752,8 +867,8 @@ class Game {
       } else if (e.type === 'crusher') {
         this.stepCrusher(e);
       } else if (e.type === 'ghost') {
-        // Drifts straight at the runner, through anything, until its time runs out.
-        const p = this.player;
+        // Drifts straight at the nearest runner, through anything, until its time runs out.
+        const p = this.nearest(e.x + e.w / 2, e.y + e.h / 2);
         const dx = p.x + p.w / 2 - (e.x + e.w / 2), dy = p.y + p.h / 2 - (e.y + e.h / 2);
         const d = Math.hypot(dx, dy) || 1;
         e.x += (dx / d) * GHOST_SPEED;
@@ -770,9 +885,8 @@ class Game {
 
   // wait -> shake (warning) -> drop -> rest on the floor -> rise back up -> wait
   stepCrusher(e) {
-    const p = this.player;
     if (e.state === 'wait') {
-      if (Math.abs(p.x + p.w / 2 - (e.x + e.w / 2)) < 14 && p.y > e.y) { e.state = 'shake'; e.t2 = 14; this.events.push('crack'); }
+      if (this.alive().some((p) => Math.abs(p.x + p.w / 2 - (e.x + e.w / 2)) < 14 && p.y > e.y)) { e.state = 'shake'; e.t2 = 14; this.events.push('crack'); }
     } else if (e.state === 'shake') {
       if (--e.t2 <= 0) { e.state = 'drop'; e.vy = 0; }
     } else if (e.state === 'drop') {
@@ -796,7 +910,6 @@ class Game {
 
   // What gets sent to the browsers every tick.
   snapshot() {
-    const p = this.player;
     const secs = this.secondsSurvived();
     const tier = C.CREDIT_TIERS[this.tier];
     const s = {
@@ -811,28 +924,28 @@ class Game {
       rate: tier.perSecond,
       cap: tier.cap,
       winner: this.winner,
-      p: {
+      // one entry per runner
+      ps: this.players.map((p) => ({
         x: r1(p.x), y: r1(p.y), vx: r1(p.vx), f: p.facing, g: p.onGround ? 1 : 0, iv: p.invuln, l: p.lives,
-        fly: this.abil[ABILITY_INDEX.fly].active > 0 ? 1 : 0,
+        out: p.out ? 1 : 0,
+        fly: p.abil[ABILITY_INDEX.fly].active > 0 ? 1 : 0,
         rot: spinQuarter(p.spin), // somersault: quarter turns clockwise, 0-3
         ws: p.sliding, // sliding down a wall on this side (-1 / 1)
-      },
-      // per move: [state, seconds] where state is L(ocked), A(ctive), C(ooling down) or R(eady)
-      ab: this.abil.map((a, i) =>
-        !a.unlocked ? ['L', Math.ceil(C.ABILITIES[i].unlock - secs)]
-          : a.active > 0 ? ['A', Math.ceil(a.active / C.FPS)]
-            : a.cd > 0 ? ['C', Math.ceil(a.cd / C.FPS)] : ['R', 0]),
+        // per move: [state, seconds] where state is L(ocked), A(ctive), C(ooling down) or R(eady)
+        ab: p.abil.map((a, i) =>
+          !a.unlocked ? ['L', Math.ceil(C.ABILITIES[i].unlock - secs)]
+            : a.active > 0 ? ['A', Math.ceil(a.active / C.FPS)]
+              : a.cd > 0 ? ['C', Math.ceil(a.cd / C.FPS)] : ['R', 0]),
+      })),
       tiles: [...this.tiles.values()].map((t) => [t.c, t.r, t.type, t.spawn > 0 ? 1 : 0, tileFlag(t)]),
       pits: [...this.pits],
       ents: this.ents.map((e) => [e.id, e.type, r1(e.x), r1(e.y), e.spawn > 0 ? 1 : 0, e.warn > 0 ? 1 : 0, entExtra(e)]),
       wind: this.wind,
       // per item, in ITEMS order: how much of its recharge is left, 0 (ready) to 1
       cds: C.ITEMS.map((i) => {
-        const left = BRICK[i.id] ? this.brickLock : this.itemCd[i.id] || 0;
-        const total = BRICK[i.id] ? BRICK_LOCK_TICKS : this.cdTotal(i);
-        return left > 0 ? Math.max(0.01, Math.round((left / total) * 100) / 100) : 0;
+        const left = this.itemCd[i.id] || 0;
+        return left > 0 ? Math.max(0.01, Math.round((left / this.cdTotal(i)) * 100) / 100) : 0;
       }),
-      bricks: this.brickLock > 0 ? 0 : C.BRICKS.burst - this.brickCount, // how many more before the pause
       fog: this.fog,
       fx: this.fx.map((f) => [f.k, f.a, f.b, f.c, f.ttl]),
       ev: this.events,

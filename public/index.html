@@ -10,25 +10,34 @@
 
 <div id="lobby" class="screen">
   <h1>RUN <span class="slash">/</span> RUIN</h1>
-  <p class="tag">ONE RUNS. ONE RUINS. 2 MINUTES.</p>
+  <p class="tag">RUN. RUIN. 2 MINUTES.</p>
   <div class="roles">
-    <button id="pickRunner" class="role">
-      <canvas id="iconRunner" width="16" height="16"></canvas>
-      <b>RUNNER</b>
+    <button id="pick-runner1" class="role">
+      <canvas id="icon-runner1" width="16" height="16"></canvas>
+      <b>RUNNER 1</b>
       <span>Survive 2 minutes</span>
-      <em id="runnerStatus">OPEN</em>
+      <em>OPEN</em>
     </button>
-    <button id="pickBuilder" class="role">
-      <canvas id="iconBuilder" width="16" height="16"></canvas>
+    <button id="pick-runner2" class="role">
+      <canvas id="icon-runner2" width="16" height="16"></canvas>
+      <b>RUNNER 2</b>
+      <span>Optional team-mate</span>
+      <em>OPEN</em>
+    </button>
+    <button id="pick-builder" class="role">
+      <canvas id="icon-builder" width="16" height="16"></canvas>
       <b>BUILDER</b>
       <span>Spend credits on traps</span>
-      <em id="builderStatus">OPEN</em>
+      <em>OPEN</em>
     </button>
   </div>
+  <button id="cpuBtn" class="small">CPU BUILDER: OFF</button>
   <button id="readyBtn" class="big" disabled>READY</button>
   <p id="lobbyMsg" class="msg"></p>
   <div class="help">
     <p><b>RUNNER</b> &larr; &rarr; or A D to move &middot; SPACE / W / &uarr; to jump (press again in the air to double jump) &middot; in the air beside a wall, push away from it and jump to wall jump (not twice off the same wall) &middot; land on anything marked with a small arrow to stomp it (slimes, bats, hoppers, crushers, cannonballs) &middot; no arrow means don't</p>
+    <p><b>TWO RUNNERS</b> are a team: the round is won if either of you is still standing at the end &middot; you bounce off each other, and landing on your team-mate's head springs you up</p>
+    <p><b>CPU BUILDER</b> switch it on to play without a human builder &middot; it plays harder as the round goes on, and comes back a level tougher each time you beat it</p>
     <p><b>+1</b> a heart appears now and then ahead of the runner: grab it for an extra life (up to 5)</p>
     <p><b>RUNNER MOVES</b> unlock the longer you survive: 1 triple jump &middot; 2 laser vision &middot; 3 explode &middot; 4 fly (steer with the mouse)</p>
     <p><b>BUILDER</b> pick an item (click it, or press the key shown on it) and click the map to place it ahead of the runner &middot; drag to paint &middot; most items need a moment to recharge &middot; credits come faster as the round goes on</p>

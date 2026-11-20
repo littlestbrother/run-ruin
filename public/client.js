@@ -16,7 +16,8 @@
     B: '#3838a8', h: '#6868e8', // ninja garb and its highlight
   };
 
-  function sprite(rows, flip) {
+  // `recolour` swaps palette letters for other colours, e.g. { B: '#a82828' }
+  function sprite(rows, flip, recolour) {
     const cv = document.createElement('canvas');
     cv.width = 16; cv.height = 16;
     const g = cv.getContext('2d');
@@ -24,7 +25,7 @@
       for (let x = 0; x < 16; x++) {
         const ch = row[x];
         if (!ch || ch === '.') continue;
-        g.fillStyle = PAL[ch] || '#f0f';
+        g.fillStyle = (recolour && recolour[ch]) || PAL[ch] || '#f0f';
         g.fillRect(flip ? 15 - x : x, y, 1, 1);
       }
     });
@@ -53,11 +54,16 @@
     run: ['...kBk....kBk...', '..kBk......kBk..', '..kkk......kkk..'],
     jump: ['...kBk....kBk...', '...kkk....kkk...', '................'],
   };
-  const hero = {};
-  for (const pose of Object.keys(HERO_LEGS)) {
-    const rows = HERO_TOP.concat(HERO_LEGS[pose]);
-    hero[pose] = { 1: sprite(rows, false), '-1': sprite(rows, true) };
-  }
+  // Runner 1 wears indigo with a red headband; runner 2 wears red with a yellow one.
+  const RUNNER_COLOURS = ['#6868e8', '#e86060'];
+  const heroes = [null, { B: '#a82828', h: '#e86060', r: '#f8d838' }].map((recolour) => {
+    const set = {};
+    for (const pose of Object.keys(HERO_LEGS)) {
+      const rows = HERO_TOP.concat(HERO_LEGS[pose]);
+      set[pose] = { 1: sprite(rows, false, recolour), '-1': sprite(rows, true, recolour) };
+    }
+    return set;
+  });
 
   const slimeA = sprite([
     '', '', '', '',
@@ -453,14 +459,14 @@
   const ABOUT = {
     block: 'Solid brick.',
     crumble: 'Breaks soon after the runner stands on it.',
-    spike: 'Hurts on touch. Needs a floor under it.',
+    spike: 'Hurts on touch. Needs a floor under it. Must leave the runner a safe way past.',
     slime: 'Walks along the ground. Can be stomped.',
     pit: 'Removes 2 tiles of ground.',
     bat: 'Flies at the runner in a wave. Can be stomped.',
     boulder: "Drops anywhere on the runner's screen after a warning, then rolls.",
     cannon: 'Solid. Fires big cannonballs, which can be stomped.',
     saw: 'Slides back and forth. Cannot be stomped.',
-    flame: 'Solid. Fires 2 tiles upward on a timer.',
+    flame: 'Solid. Fires 2 tiles upward on a timer. Must leave the runner a safe way past.',
     crusher: 'Slams down when the runner walks under it. Can be stomped from above.',
     ghost: 'Chases through walls for 8 seconds. Cannot be stomped.',
     mine: 'Turns invisible to the runner, then blows up when they get close.',
@@ -514,6 +520,7 @@
     beep: () => tone(988, 0.08, 'square', 0.06),
     deny: () => tone(120, 0.12, 'square', 0.06),
     go: () => tone(784, 0.4, 'square', 0.08),
+    bump: () => tone(240, 0.09, 'square', 0.08, 480),
     power: () => tone(440, 0.3, 'square', 0.07, 1760),
     lifeup: () => [1047, 1319, 1568].forEach((f, i) => tone(f, 0.09, 'square', 0.05, 0, i * 0.07)),
     life: () => [659, 784, 1319, 1047, 1175, 1568].forEach((f, i) => tone(f, 0.1, 'square', 0.08, 0, i * 0.09)),
@@ -616,7 +623,10 @@
   // Connection + lobby
   // ------------------------------------------------------------------
   let ws = null;
-  let role = null;
+  let role = null; // 'runner1', 'runner2', 'builder', or null when just watching
+  let isRunner = false;
+  let me = -1; // which runner in the game this browser controls
+  const SEATS = ['runner1', 'runner2', 'builder'];
   let lobby = null;
   let state = null;
   let selected = 'block';
@@ -647,27 +657,39 @@
   function onLobby(m) {
     lobby = m;
     role = m.you;
+    isRunner = role === 'runner1' || role === 'runner2';
+    me = m.me;
     if (m.inGame) return; // state messages drive the game screen
     state = null;
     music(false);
     showLobby();
     showJoinHint(m.joinUrl);
-    for (const r of ['runner', 'builder']) {
-      const btn = $(r === 'runner' ? 'pickRunner' : 'pickBuilder');
-      const mine = role === r;
+    for (const seat of SEATS) {
+      const btn = $('pick-' + seat), st = m.seats[seat];
+      const mine = role === seat;
+      const cpuHere = seat === 'builder' && m.cpu && !st.taken;
       btn.classList.toggle('mine', mine);
-      btn.classList.toggle('taken', m[r] && !mine);
-      $(r + 'Status').textContent = mine ? (m[r + 'Ready'] ? 'YOU - READY!' : 'YOU') : m[r] ? (m[r + 'Ready'] ? 'TAKEN - READY!' : 'TAKEN') : 'OPEN';
+      btn.classList.toggle('taken', st.taken && !mine);
+      btn.classList.toggle('cpu', cpuHere);
+      btn.querySelector('em').textContent = cpuHere ? `CPU - LEVEL ${m.cpuLevel}`
+        : mine ? (st.ready ? 'YOU - READY!' : 'YOU') : st.taken ? (st.ready ? 'TAKEN - READY!' : 'TAKEN') : 'OPEN';
     }
-    const ready = role && m[role + 'Ready'];
+    $('cpuBtn').textContent = m.cpu ? `CPU BUILDER: ON (LEVEL ${m.cpuLevel})` : 'CPU BUILDER: OFF';
+    $('cpuBtn').classList.toggle('on', m.cpu);
+    $('cpuBtn').disabled = m.seats.builder.taken;
+    const ready = role && m.seats[role].ready;
     $('readyBtn').disabled = !role;
     $('readyBtn').classList.toggle('on', !!ready);
     $('readyBtn').textContent = ready ? 'WAITING...' : 'READY';
-    $('lobbyMsg').textContent = m.notice || (!role ? 'Pick a side.' : !(m.runner && m.builder) ? 'Waiting for a second player to pick the other side.' : '');
+    const hasRunner = m.seats.runner1.taken || m.seats.runner2.taken;
+    const hasBuilder = m.seats.builder.taken || m.cpu;
+    $('lobbyMsg').textContent = m.notice || (!role ? 'Pick a seat.'
+      : !hasBuilder ? 'Needs a builder: someone takes that seat, or switch the CPU builder on.'
+        : !hasRunner ? 'Needs at least one runner.' : 'Starts when everyone seated is ready.');
   }
 
-  $('pickRunner').onclick = () => { initAudio(); send({ t: 'role', role: role === 'runner' ? null : 'runner' }); };
-  $('pickBuilder').onclick = () => { initAudio(); send({ t: 'role', role: role === 'builder' ? null : 'builder' }); };
+  for (const seat of SEATS) $('pick-' + seat).onclick = () => { initAudio(); send({ t: 'role', role: role === seat ? null : seat }); };
+  $('cpuBtn').onclick = () => { initAudio(); send({ t: 'cpu', on: !(lobby && lobby.cpu) }); };
   $('readyBtn').onclick = () => { initAudio(); send({ t: 'ready' }); };
   $('rematchBtn').onclick = () => send({ t: 'rematch' });
   $('swapBtn').onclick = () => send({ t: 'swap' });
@@ -675,12 +697,13 @@
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
   function showJoinHint(joinUrl) {
     const url = !local ? location.origin : joinUrl || `http://<this computer's LAN IP>:${location.port || 80}`;
-    $('joinHint').textContent = `Your friend joins at ${url}`;
+    $('joinHint').textContent = `Other players join at ${url}`;
   }
   showJoinHint('');
 
-  $('iconRunner').getContext('2d').drawImage(hero.stand[1], 0, 0);
-  $('iconBuilder').getContext('2d').drawImage(tiles.cannon, 0, 0);
+  $('icon-runner1').getContext('2d').drawImage(heroes[0].stand[1], 0, 0);
+  $('icon-runner2').getContext('2d').drawImage(heroes[1].stand[1], 0, 0);
+  $('icon-builder').getContext('2d').drawImage(tiles.cannon, 0, 0);
 
   // ------------------------------------------------------------------
   // Game screen
@@ -696,7 +719,7 @@
   let painting = false;
 
   function layout() {
-    const cols = role === 'runner' ? C.VIEW_COLS : C.BUILDER_COLS;
+    const cols = isRunner ? C.VIEW_COLS : C.BUILDER_COLS;
     if (cols !== viewCols) { viewCols = cols; canvas.width = cols * T; canvas.height = H; }
     // room for everything that isn't the picture: top bar, moves strip, and the builder's item row
     const reserved = role === 'builder' ? 190 : 110;
@@ -722,9 +745,7 @@
       cv.width = 16; cv.height = 16;
       cv.getContext('2d').drawImage(ICONS[item.id], 0, 0);
       b.appendChild(cv);
-      // bricks get a row of pips: how many more can go down before the shared pause
-      const pips = C.BRICKS.items.includes(item.id) ? `<span class="pips">${'<i></i>'.repeat(C.BRICKS.burst)}</span>` : '';
-      b.insertAdjacentHTML('beforeend', `<span class="hotkey">${item.key}</span><span class="cost">${item.cost}</span>${pips}<i class="cd"></i>`);
+      b.insertAdjacentHTML('beforeend', `<span class="hotkey">${item.key}</span><span class="cost">${item.cost}</span><i class="cd"></i>`);
       b.onclick = () => { selected = item.id; };
       el.appendChild(b);
     }
@@ -751,12 +772,16 @@
       music(true);
     }
     for (const ev of s.ev) {
-      if (ev === 'go') showBanner('GO!', 900);
-      if (ev === 'life') showBanner(role === 'runner' ? '+1 LIFE!' : 'RUNNER GOT +1 LIFE', 1500, true);
+      if (ev === 'go') showBanner('GO!', 900, true);
+      if (ev === 'life') showBanner('+1 LIFE!', 1500, true);
+      if (ev.startsWith('out')) {
+        if (s.ps.length > 1 && s.phase !== 'over') showBanner(`RUNNER ${+ev.slice(3) + 1} IS OUT!`, 2200, true);
+        continue;
+      }
       if (ev === 'tier') showBanner(role === 'builder' ? `INCOME UP! +${s.rate}/SEC` : `BUILDER INCOME UP! +${s.rate}/SEC`, 2200, true);
       if (ev.startsWith('unlock')) {
         const a = C.ABILITIES[+ev.slice(6)];
-        showBanner(role === 'runner' ? `NEW MOVE: ${a.name} - PRESS ${a.key}` : `RUNNER UNLOCKED ${a.name}`, 2600, true);
+        showBanner(isRunner ? `NEW MOVE: ${a.name} - PRESS ${a.key}` : `RUNNER UNLOCKED ${a.name}`, 2600, true);
         sfx('unlock');
         continue;
       }
@@ -770,11 +795,15 @@
   }
 
   function updateHud(s) {
-    $('hudLives').textContent = '♥'.repeat(s.p.l) + '♡'.repeat(Math.max(0, C.LIVES - s.p.l));
+    // one set of hearts per runner, in that runner's colour
+    const lives = s.ps.map((q, i) => `<span style="color:${RUNNER_COLOURS[i]}">${s.ps.length > 1 ? `P${i + 1} ` : ''}`
+      + (q.out ? 'OUT' : '♥'.repeat(q.l) + '♡'.repeat(Math.max(0, C.LIVES - q.l))) + '</span>').join(' &nbsp; ');
+    if (lives !== lastLives) { lastLives = lives; $('hudLives').innerHTML = lives; }
+    const mine = s.ps[isRunner && s.ps[me] ? me : 0]; // whose moves the strip shows
     const t = Math.max(0, s.time);
     $('hudTime').textContent = Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
     $('hudTime').classList.toggle('low', t <= 10);
-    $('hudCredits').textContent = `CREDITS ${s.credits}/${s.cap}  +${s.rate}/S`;
+    $('hudCredits').textContent = `${lobby && lobby.cpu ? `CPU L${lobby.cpuLevel} · ` : ''}CREDITS ${s.credits}/${s.cap} +${s.rate}/S`;
 
     const el = $('banner');
     const live = s.phase !== 'over' && performance.now() < banner.until;
@@ -785,18 +814,22 @@
     // runner's moves: shown to everyone, pressable only by the runner
     const movesEl = $('moves');
     C.ABILITIES.forEach((a, i) => {
-      const [st, n] = s.ab[i];
+      const [st, n] = mine.ab[i];
       const chip = movesEl.children[i];
       chip.className = 'move ' + { L: 'locked', A: 'active', C: 'cooling', R: 'ready' }[st];
       chip.lastChild.textContent = st === 'L' ? `UNLOCKS IN ${n}S` : st === 'A' ? `ACTIVE ${n}S` : st === 'C' ? `RECHARGING ${n}S` : 'READY';
     });
-    canvas.classList.toggle('flying', role === 'runner' && !!s.p.fly);
+    canvas.classList.toggle('flying', isRunner && !!mine.fly);
 
     if (s.phase === 'over') {
       const runnerWon = s.winner === 'runner';
-      $('endTitle').textContent = runnerWon ? 'RUNNER SURVIVED!' : 'RUNNER DESTROYED!';
-      $('endSub').textContent = !role ? '' : (role === s.winner ? 'YOU WIN' : 'YOU LOSE');
+      const team = s.ps.length > 1 ? 'RUNNERS' : 'RUNNER';
+      $('endTitle').textContent = runnerWon ? `${team} SURVIVED!` : `${team} DESTROYED!`;
+      const vsCpu = !!(lobby && lobby.cpu);
+      $('endSub').textContent = (!role ? '' : (isRunner === runnerWon ? 'YOU WIN' : 'YOU LOSE'))
+        + (vsCpu && runnerWon ? ' - THE CPU COMES BACK TOUGHER' : '');
       $('endButtons').classList.toggle('hidden', !role);
+      $('swapBtn').classList.toggle('hidden', vsCpu); // nothing to swap with
       $('endBox').classList.remove('hidden');
     }
 
@@ -806,16 +839,15 @@
         b.classList.toggle('sel', item.id === selected);
         b.classList.toggle('poor', s.credits < item.cost || s.cds[i] > 0);
         b.lastChild.style.height = s.cds[i] * 100 + '%'; // recharge shade drains away
-        const pips = b.querySelector('.pips');
-        if (pips) for (let n = 0; n < pips.children.length; n++) pips.children[n].classList.toggle('on', n < s.bricks);
       });
       const sel = C.ITEMS.find((i) => i.id === selected);
-      const info = `<b>${sel.name}</b> &middot; ${sel.cost} credit${sel.cost === 1 ? '' : 's'}${sel.cooldown ? ` &middot; ${sel.cooldown}s recharge` : ''}${C.BRICKS.items.includes(sel.id) ? ` &middot; ${C.BRICKS.cooldown}s pause after every ${C.BRICKS.burst} bricks` : ''} &middot; ${ABOUT[sel.id]}`;
+      const info = `<b>${sel.name}</b> &middot; ${sel.cost} credit${sel.cost === 1 ? '' : 's'}${sel.cooldown ? ` &middot; ${sel.cooldown}s recharge` : ''} &middot; ${ABOUT[sel.id]}`;
       if (info !== lastInfo) { lastInfo = info; $('itemInfo').innerHTML = info; }
     }
   }
 
   let lastInfo = '';
+  let lastLives = '';
   let flashTimer = null;
   function flash(text) {
     $('deny').textContent = text;
@@ -834,7 +866,7 @@
     Space: 'j', ArrowUp: 'j', KeyW: 'j', KeyZ: 'j', KeyX: 'j',
   };
   function pushInput(pressed) {
-    if (role !== 'runner' || !state) return;
+    if (!isRunner || !state) return;
     const sig = `${+keys.l}${+keys.r}${+keys.j}`;
     if (sig === sent && !pressed) return;
     sent = sig;
@@ -844,14 +876,14 @@
     if (e.code === 'KeyM') { muted = !muted; return; }
     if (!state) return;
     const k = KEYMAP[e.code];
-    if (k && role === 'runner') {
+    if (k && isRunner) {
       e.preventDefault();
       if (e.repeat) return;
       keys[k] = true;
       pushInput(k === 'j');
       return;
     }
-    if (role === 'runner' && !e.repeat) {
+    if (isRunner && !e.repeat) {
       const i = C.ABILITIES.findIndex((a) => a.key === e.key);
       if (i >= 0) { sendAim(); send({ t: 'ab', i }); }
     }
@@ -867,7 +899,7 @@
   addEventListener('blur', () => { keys.l = keys.r = keys.j = false; pushInput(false); });
 
   function pollGamepad() {
-    if (role !== 'runner' || !navigator.getGamepads) return;
+    if (!isRunner || !navigator.getGamepads) return;
     const pad = [...navigator.getGamepads()].find(Boolean);
     if (!pad) return;
     const ax = pad.axes[0] || 0;
@@ -923,15 +955,15 @@
     tryPlace();
   });
   canvas.addEventListener('mousemove', (e) => {
-    if (role === 'runner') return; // handled by the window listener below
+    if (isRunner) return; // handled by the window listener below
     mouse = mousePos(e);
     if (painting && PAINTABLE[selected]) tryPlace(true);
   });
   addEventListener('mouseup', () => { painting = false; });
-  canvas.addEventListener('mouseleave', () => { if (role !== 'runner') mouse = null; });
+  canvas.addEventListener('mouseleave', () => { if (!isRunner) mouse = null; });
   // The runner mostly plays on the keyboard, so follow their pointer even when it is off the picture.
   addEventListener('mousemove', (e) => {
-    if (role !== 'runner' || !state) return;
+    if (!isRunner || !state) return;
     const m = mousePos(e);
     mouse = { x: Math.max(0, Math.min(canvas.width, m.x)), y: Math.max(0, Math.min(canvas.height, m.y)) };
     sendAim();
@@ -1115,12 +1147,13 @@
   }
 
   // The time of day washes over everything in the world, and some scenes have weather.
-  function drawLight(scene, W, tick) {
+  // (`x0` is the left edge of the screen in world pixels: this is drawn inside the scrolled world.)
+  function drawLight(scene, x0, W, tick) {
     const { a, b, blend } = scene;
     const t = a.tint.map((v, i) => v + (b.tint[i] - v) * blend);
     if (t[3] > 0.005) {
       ctx.fillStyle = `rgba(${Math.round(t[0])}, ${Math.round(t[1])}, ${Math.round(t[2])}, ${t[3].toFixed(3)})`;
-      ctx.fillRect(0, 0, W, H);
+      ctx.fillRect(x0, 0, W, H);
     }
     const rain = (a.rain ? 1 - blend : 0) + (b.rain ? blend : 0);
     if (rain > 0) {
@@ -1129,8 +1162,8 @@
       for (let i = 0; i < W / 5; i++) {
         const x = (hash(i + 700) * (W + 60) + tick * 1.5) % (W + 60) - 30;
         const y = (hash(i + 750) * H + tick * (5 + (i % 3))) % H;
-        ctx.fillRect(Math.floor(x), Math.floor(y), 1, 4);
-        ctx.fillRect(Math.floor(x) + 1, Math.floor(y) + 4, 1, 3);
+        ctx.fillRect(x0 + Math.floor(x), Math.floor(y), 1, 4);
+        ctx.fillRect(x0 + Math.floor(x) + 1, Math.floor(y) + 4, 1, 3);
       }
       ctx.globalAlpha = 1;
     }
@@ -1162,7 +1195,7 @@
     for (const [c, r, type, spawning, flag] of s.tiles) {
       const x = c * T, y = r * T;
       if (type === 'mine' && flag === 1) {
-        if (role === 'runner') continue; // hidden from the runner; the builder sees a faint one
+        if (isRunner) continue; // hidden from the runner; the builder sees a faint one
         ctx.globalAlpha = 0.4;
       }
       if (spawning) ctx.globalAlpha = blink ? 0.75 : 0.3;
@@ -1230,7 +1263,7 @@
       }
       ctx.globalAlpha = 1;
       // On the runner's screen, a little bobbing arrow sits over anything that can be stomped.
-      if (role === 'runner' && !spawning && C.STOMPABLE.includes(type)) {
+      if (isRunner && !spawning && C.STOMPABLE.includes(type)) {
         const ax = ex + (STOMP_WIDTH[type] >> 1);
         const ay = ey - 9 + Math.round(Math.sin((s.tick + id * 5) * 0.2) * 1.5);
         ctx.fillStyle = '#000';
@@ -1240,12 +1273,15 @@
       }
     }
 
-    // runner
-    const p = s.p;
-    if (!(p.iv > 0 && blink) && !(s.phase === 'over' && s.winner === 'builder')) {
+    // The time-of-day wash goes over the world but under the runners, so they stay easy to see at night.
+    drawLight(scene, cam, W, s.tick);
+
+    // runners
+    s.ps.forEach((p, i) => {
+      if (p.out || (p.iv > 0 && blink)) return;
       const pose = !p.g ? 'jump' : Math.abs(p.vx) > 0.3 && ((s.tick >> 3) & 1) ? 'run' : 'stand';
       const px = Math.round(p.x) - 3, py = Math.round(p.y) - 2;
-      const img = hero[p.fly ? 'jump' : pose][p.f];
+      const img = heroes[i][p.fly ? 'jump' : pose][p.f];
       if (p.rot) { // mid-somersault: turned in quarter steps so the pixels stay square
         ctx.save();
         ctx.translate(px + 8, py + 8);
@@ -1265,13 +1301,18 @@
         ctx.fillStyle = '#fcfcfc';
         ctx.fillRect(px + 7, py + 15, 2, 2);
       }
-      if (s.ab[0][0] === 'A') { // triple jump sparkle
+      if (p.ab[0][0] === 'A') { // triple jump sparkle
         ctx.fillStyle = '#3cbcfc';
         const o = (s.tick >> 2) % 4;
         ctx.fillRect(px + 1 + o * 4, py + 16, 2, 2);
         ctx.fillRect(px + 13 - o * 4, py + 18, 2, 2);
       }
-    }
+      if (isRunner && i === me && s.ps.length > 1 && s.phase === 'countdown') { // "this one is you", until the round starts
+        ctx.fillStyle = blink ? '#fcfcfc' : RUNNER_COLOURS[i];
+        ctx.fillRect(px + 4, py - 9, 8, 2); ctx.fillRect(px + 5, py - 7, 6, 2); ctx.fillRect(px + 7, py - 5, 2, 2);
+      }
+    });
+    const own = isRunner ? s.ps[me] : null;
 
     for (const [k, a, b, c, ttl] of s.fx) {
       if (k === 'laser') {
@@ -1300,7 +1341,6 @@
     }
     ctx.restore();
 
-    drawLight(scene, W, s.tick);
     if (s.wind > 0) { // streaks blowing back across the runner's screen
       ctx.fillStyle = '#fcfcfc';
       const span = C.VIEW_COLS * T + 40;
@@ -1315,7 +1355,7 @@
       const x0 = C.FOG_START_X, x1 = C.VIEW_COLS * T;
       const fade = Math.min(1, s.fog / 30);
       // solid for the runner; the others just get a haze so they can see what is in it
-      ctx.globalAlpha = role === 'runner' ? fade : 0.3 * fade;
+      ctx.globalAlpha = isRunner ? fade : 0.3 * fade;
       ctx.fillStyle = '#bcbcbc';
       ctx.fillRect(x0 + 8, 0, x1 - x0 - 8, H);
       for (let y = 0; y < H; y += 16) {
@@ -1330,8 +1370,8 @@
       ctx.globalAlpha = 1;
     }
 
-    if (role !== 'runner') drawBuilderOverlay(s, cam, W);
-    else if (p.fly && mouse) {
+    if (!isRunner) drawBuilderOverlay(s, cam, W);
+    else if (own && own.fly && mouse) {
       sendAim(); // keep steering even if the last pointer update was skipped
       const mx = Math.round(mouse.x), my = Math.round(mouse.y);
       ctx.fillStyle = blink ? '#fcfcfc' : '#f8b800';
@@ -1352,7 +1392,8 @@
     //   most things   not within a few tiles in front of the runner
     //   boulder       only on the runner's screen, so not to the right of it
     //   wind / fog    no position at all, so nothing is off limits
-    const limitCol = Math.floor((s.p.x + 5) / T) + C.MIN_BUILD_DIST_COLS;
+    // measured from whichever runner is furthest ahead
+    const limitCol = Math.max(0, ...s.ps.filter((q) => !q.out).map((q) => Math.floor((q.x + 5) / T))) + C.MIN_BUILD_DIST_COLS;
     const boulderMaxCol = Math.floor(cam / T) + C.VIEW_COLS;
     const holding = role === 'builder' ? selected : 'block';
     const noBuild = (x0, x1, lineX) => {

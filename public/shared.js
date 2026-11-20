@@ -48,10 +48,6 @@
     // Things the runner destroys by landing on top of them. The runner's screen marks these with an arrow.
     STOMPABLE: ['slime', 'bat', 'crusher', 'hopper', 'bullet'],
 
-    // Bricks share one counter: after `burst` of them (any mix), all brick items lock
-    // for `cooldown` seconds. Going that long without placing one resets the count.
-    BRICKS: { items: ['block', 'crumble'], burst: 5, cooldown: 2 },
-
     // "cooldown" is seconds before the builder can place that item again (0 = no wait).
     // For wind and fog it starts counting once the effect has ended.
     ITEMS: [

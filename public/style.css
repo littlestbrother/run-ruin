@@ -22,7 +22,7 @@ h1 .slash { color: #fcfcfc; }
 .roles { display: flex; gap: 20px; margin-top: 10px; }
 button { font: inherit; text-transform: inherit; letter-spacing: inherit; color: #fcfcfc; cursor: pointer; }
 .role {
-  width: 230px; padding: 16px 10px; background: #1c1c34; border: 4px solid #7c7c7c;
+  width: 200px; padding: 16px 10px; background: #1c1c34; border: 4px solid #7c7c7c;
   display: flex; flex-direction: column; align-items: center; gap: 8px;
   box-shadow: 4px 4px 0 #000;
 }
@@ -33,6 +33,11 @@ button { font: inherit; text-transform: inherit; letter-spacing: inherit; color:
 .role.mine { border-color: #f8b800; background: #2c2450; }
 .role.taken { opacity: 0.55; cursor: not-allowed; }
 .role.taken em { color: #d82800; }
+.role.cpu { border-color: #3cbcfc; }
+.role.cpu em { color: #3cbcfc; }
+.small { font-size: 12px; padding: 7px 14px; background: #1c1c34; border: 3px solid #7c7c7c; box-shadow: 3px 3px 0 #000; }
+.small.on { border-color: #3cbcfc; color: #3cbcfc; }
+.small:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .big {
   font-size: 18px; padding: 12px 26px; background: #00a800; border: 4px solid #fcfcfc;
@@ -53,8 +58,8 @@ button { font: inherit; text-transform: inherit; letter-spacing: inherit; color:
 #hud span { flex: 1; }
 #hudTime { text-align: center; font-size: 24px; color: #f8b800; }
 #hudTime.low { color: #d82800; }
-#hudLives { color: #d82800; letter-spacing: 4px; }
-#hudCredits { text-align: right; color: #b8f818; }
+#hudLives { color: #d82800; letter-spacing: 2px; white-space: nowrap; }
+#hudCredits { text-align: right; color: #b8f818; white-space: nowrap; }
 #stage { position: relative; line-height: 0; border: 4px solid #fcfcfc; box-shadow: 6px 6px 0 #000; }
 #game { display: block; cursor: crosshair; }
 
@@ -77,16 +82,20 @@ button { font: inherit; text-transform: inherit; letter-spacing: inherit; color:
 .item .hotkey { position: absolute; left: 3px; bottom: 1px; font-size: 8px; color: #bcbcbc; }
 .item .cost { position: absolute; right: 3px; bottom: 1px; font-size: 9px; color: #b8f818; }
 .item .cd { position: absolute; left: 0; right: 0; top: 0; height: 0; background: rgba(0, 0, 0, 0.72); pointer-events: none; }
-.item .pips { position: absolute; left: 2px; right: 2px; top: 1px; display: flex; gap: 2px; }
-.item .pips i { flex: 1; height: 3px; background: #3c3c3c; }
-.item .pips i.on { background: #f8b800; }
 .item.sel { border-color: #f8b800; background: #2c2450; }
 .item.poor canvas { opacity: 0.35; }
 #itemInfo { margin: 0; min-height: 14px; font-size: 10px; color: #bcbcbc; text-transform: none; text-align: center; }
 #itemInfo b { color: #f8b800; text-transform: uppercase; }
 #deny { position: absolute; left: 0; right: 0; bottom: 10px; text-align: center; line-height: 1; pointer-events: none; text-shadow: 2px 2px 0 #000; }
 
-#banner.small { font-size: 22px; align-items: flex-start; padding-top: 12%; color: #f8b800; text-align: center; line-height: 1.4; }
+/* In-round notices are a one-line strip along the top edge, so they never cover the action.
+   (Only the pre-round countdown uses the big centred style.) */
+#banner.small {
+  inset: auto; top: 6px; left: 50%; transform: translateX(-50%);
+  display: block; max-width: 96%; padding: 4px 10px;
+  font-size: 11px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: #f8b800; text-shadow: none; background: rgba(0, 0, 0, 0.62); border: 2px solid #f8b800;
+}
 
 #moves { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
 .move {
