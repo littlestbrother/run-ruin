@@ -10,7 +10,7 @@ const started = (pickups) => {
   const g = new Game(); run(g, C.COUNTDOWN_SECONDS * C.FPS); assert.equal(g.phase, 'play');
   if (!pickups) g.lifeTimer = Infinity;
   const place = g.place.bind(g);
-  g.place = (...a) => { g.itemCd = {}; return place(...a); };
+  g.place = (...a) => { g.itemCd = {}; g.brickLock = 0; g.brickCount = 0; return place(...a); };
   return g;
 };
 const rich = () => { const g = started(); g.credits = 9999; return g; };
@@ -375,6 +375,8 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   assert.equal(g.place('bat', 24, 8), null); // other items are unaffected
   assert.equal(g.place('block', 25, 5), null);
   assert.equal(g.place('block', 26, 5), null);
+  for (const c of [27, 28]) assert.equal(g.place('spike', c, 12), null); // spikes and pits have no wait either
+  for (const c of [14, 16]) assert.equal(g.place('pit', c, 13), null);
   const cd = (id) => g.snapshot().cds[C.ITEMS.findIndex((i) => i.id === id)];
   assert.equal(cd('slime'), 1); assert.equal(cd('block'), 0);
   run(g, 3 * 60 - 1);
@@ -386,6 +388,34 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   assert.equal(g.place('fog', 0, 0), 'recharging');
   run(g, 1);
   assert.equal(g.place('fog', 0, 0), null);
+}
+
+// Bricks: after 5 (any mix of block and crumble) both lock for 2 seconds; slow building never locks.
+{
+  const g = new Game(); run(g, C.COUNTDOWN_SECONDS * C.FPS); g.credits = 999; g.lifeTimer = Infinity;
+  const bricksLeft = () => g.snapshot().bricks;
+  const types = ['block', 'crumble', 'block', 'crumble', 'block'];
+  types.forEach((t, i) => { assert.equal(bricksLeft(), 5 - i); assert.equal(g.place(t, 14 + i, 3), null); });
+  assert.equal(bricksLeft(), 0);
+  assert.equal(g.place('block', 20, 3), 'recharging');
+  assert.equal(g.place('crumble', 20, 3), 'recharging');
+  assert.equal(g.place('ice', 20, 12), null); // other no-wait items are unaffected
+  assert.equal(g.place('spike', 21, 12), null);
+  const s = g.snapshot();
+  assert.equal(s.cds[C.ITEMS.findIndex((i) => i.id === 'block')], 1);
+  assert.equal(s.cds[C.ITEMS.findIndex((i) => i.id === 'crumble')], 1);
+  run(g, 2 * 60 - 1);
+  assert.equal(g.place('block', 20, 3), 'recharging');
+  run(g, 1);
+  assert.equal(bricksLeft(), 5);
+  assert.equal(g.place('block', 20, 3), null);
+  // four more, each just under 2 seconds apart, then a 2-second gap: the count starts over
+  for (let i = 0; i < 3; i++) { run(g, 100); assert.equal(g.place('block', 21 + i, 3), null); }
+  assert.equal(bricksLeft(), 1);
+  run(g, 2 * 60);
+  assert.equal(bricksLeft(), 5);
+  for (let i = 0; i < 5; i++) assert.equal(g.place('crumble', 24 + i, 5), null);
+  assert.equal(g.place('block', 30, 5), 'recharging');
 }
 
 // Stomping: cannonballs and hoppers die to a stomp, a thorn slime hurts instead.
@@ -423,7 +453,8 @@ for (let round = 0; round < 30; round++) {
   if (round % 2) {
     // obstacle rounds: clutter the map, then ask for a pickup straight away
     for (let c = 14; c < 30; c += 2) g.place(round % 4 === 1 ? 'pit' : 'block', c, round % 4 === 1 ? 13 : 12 - (c % 3));
-    g.lifeTimer = 1; g.step();
+    // (a crowded map can make it take a few attempts; the game retries every second)
+    for (let i = 0; i < 20 && !g.ents.some((e) => e.type === 'life'); i++) { g.lifeTimer = 1; g.step(); }
   } else {
     // clean rounds: check when the first one turns up
     let at = -1;
@@ -446,6 +477,110 @@ for (let round = 0; round < 30; round++) {
     g.ents.push({ ...life, dead: false }); g.step();
     assert.equal(g.player.lives, C.MAX_LIVES); // capped
   }
+}
+
+// Wall jump: a free kick off a wall, away from it, but not off the same wall twice running.
+{
+  const g = rich();
+  for (let r = 12; r >= 3; r--) { g.tiles.set('10,' + r, { c: 10, r, type: 'block', spawn: 0, timer: 0 }); g.tiles.set('14,' + r, { c: 14, r, type: 'block', spawn: 0, timer: 0 }); }
+  const p = g.player;
+  const evs = () => { const e = g.events.filter((x) => x.startsWith('jump') || x === 'walljump'); g.events = []; return e.join(); };
+  const press = (l, r) => { g.setInput(l, r, true, true); g.step(); return evs(); };
+  const hold = (l, r, n) => { g.setInput(l, r, true, false); let out = ''; for (let i = 0; i < n; i++) { g.step(); out += evs(); } return out; };
+  // steer toward a wall until touching it in mid-air (side: -1 = the left wall, 1 = the right wall)
+  const reach = (side) => {
+    for (let i = 0; i < 90 && g.wallBeside(p) !== side; i++) hold(side < 0, side > 0, 1);
+    assert.equal(g.wallBeside(p), side); assert.ok(!p.onGround, 'still in the air');
+  };
+  p.x = 11 * 16 + 20; p.y = 194; g.step(); evs(); // standing in the shaft between the two walls
+  assert.equal(press(false, true), 'jump');
+  reach(1);
+  const before = p.airJumps;
+  assert.equal(press(true, false), 'walljump'); // jump while pushing away from it
+  assert.ok(p.vx < 0 && p.vy < -4, 'kicked up and away');
+  assert.equal(p.airJumps, before); // didn't cost the double jump
+  // straight back to the same wall: no second wall jump there, so the press falls through to the double jump
+  reach(1);
+  assert.equal(press(true, false), 'jump2');
+  reach(1);
+  assert.equal(press(true, false), ''); // nothing left
+  // cross to the other wall: a different wall, so it works again
+  reach(-1);
+  assert.equal(press(false, true), 'walljump');
+  assert.ok(p.vx > 0);
+  // and now the first wall is fair game again
+  reach(1);
+  assert.equal(press(true, false), 'walljump');
+  // letting go of the wall a moment before jumping still counts
+  reach(-1);
+  hold(false, true, 3);
+  assert.equal(g.wallBeside(p), 0);
+  assert.equal(press(false, true), 'walljump');
+  assert.equal(p.lives, C.LIVES);
+}
+
+// Pushing into a wall and jumping is still the plain double jump, straight up.
+{
+  const g = rich();
+  for (let r = 12; r >= 3; r--) g.tiles.set('10,' + r, { c: 10, r, type: 'block', spawn: 0, timer: 0 });
+  const p = g.player;
+  p.x = 10 * 16 - 10; p.y = 194; g.step(); g.events = [];
+  g.setInput(false, true, true, true); g.step();
+  for (let i = 0; i < 12; i++) { g.setInput(false, true, true, false); g.step(); }
+  g.events = [];
+  g.setInput(false, true, true, true); g.step();
+  assert.deepEqual(g.events, ['jump2']);
+  assert.equal(p.x, 10 * 16 - 10);
+}
+
+// Bouncing between two facing walls climbs higher than any jump could.
+{
+  const g = rich();
+  for (let r = 12; r >= 0; r--) for (const c of [10, 13]) g.tiles.set(c + ',' + r, { c, r, type: 'block', spawn: 0, timer: 0 });
+  const p = g.player;
+  p.x = 11 * 16 + 8; p.y = 194; g.step();
+  g.setInput(false, true, true, true); g.step();
+  let top = p.y, dir = 1;
+  for (let i = 0; i < 400; i++) {
+    const w = g.wallBeside(p);
+    if (w && !p.onGround) { dir = -w; g.setInput(dir < 0, dir > 0, true, true); } else g.setInput(dir < 0, dir > 0, true, false);
+    g.step(); top = Math.min(top, p.y);
+  }
+  assert.ok(top < 60, 'climbed the shaft, top y=' + top);
+}
+
+// Wall slide slows the fall; somersaults run in quarter turns and stop on landing.
+{
+  const g = rich();
+  for (let r = 12; r >= 0; r--) g.tiles.set('10,' + r, { c: 10, r, type: 'block', spawn: 0, timer: 0 });
+  const p = g.player;
+  p.x = 10 * 16 - 10; p.y = 20; p.vy = 0; p.onGround = false; p.coyote = 0;
+  g.setInput(false, true, false, false);
+  run(g, 30);
+  assert.equal(p.vy, 1.2);
+  assert.equal(g.snapshot().p.ws, 1);
+  g.setInput(false, false, false, false); run(g, 10);
+  assert.ok(p.vy > 3, 'falls freely once you let go');
+
+  const h = rich(); const q = h.player; const rots = [];
+  h.setInput(false, false, true, true); h.step();
+  for (let i = 0; i < 10; i++) h.step();
+  h.setInput(false, false, true, true);
+  for (let i = 0; i < 60; i++) { h.step(); rots.push(h.snapshot().p.rot); }
+  assert.deepEqual([...new Set(rots)], [0, 1, 2, 3].filter((x) => rots.includes(x)));
+  assert.ok(rots.includes(1) && rots.includes(2) && rots.includes(3), 'went all the way round: ' + rots.join(''));
+  assert.equal(rots[rots.length - 1], 0);
+  assert.ok(q.onGround);
+}
+
+// A runner who drops into a pit can kick off its side.
+{
+  const g = rich();
+  g.pits.add(10); g.pits.add(11);
+  const p = g.player;
+  p.x = 11 * 16 + 6; p.y = 13 * 16 - 6; p.vy = 2; p.onGround = false; p.coyote = 0; p.airJumps = 0; // dropping in beside the far side of the pit
+  g.setInput(true, false, true, true); g.step(); // pushing away from the pit wall
+  assert.ok(g.events.includes('walljump'), 'kicked off the side of the pit');
 }
 
 // Snapshot is plain JSON.

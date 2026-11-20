@@ -77,6 +77,9 @@ button { font: inherit; text-transform: inherit; letter-spacing: inherit; color:
 .item .hotkey { position: absolute; left: 3px; bottom: 1px; font-size: 8px; color: #bcbcbc; }
 .item .cost { position: absolute; right: 3px; bottom: 1px; font-size: 9px; color: #b8f818; }
 .item .cd { position: absolute; left: 0; right: 0; top: 0; height: 0; background: rgba(0, 0, 0, 0.72); pointer-events: none; }
+.item .pips { position: absolute; left: 2px; right: 2px; top: 1px; display: flex; gap: 2px; }
+.item .pips i { flex: 1; height: 3px; background: #3c3c3c; }
+.item .pips i.on { background: #f8b800; }
 .item.sel { border-color: #f8b800; background: #2c2450; }
 .item.poor canvas { opacity: 0.35; }
 #itemInfo { margin: 0; min-height: 14px; font-size: 10px; color: #bcbcbc; text-transform: none; text-align: center; }

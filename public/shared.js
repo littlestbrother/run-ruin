@@ -10,6 +10,7 @@
     FPS: 60,
 
     ROUND_SECONDS: 120,
+    SCENE_SECONDS: 25, // how long each background / time of day lasts before fading to the next
     COUNTDOWN_SECONDS: 5,
     LIVES: 3,
     MAX_LIVES: 5,
@@ -44,14 +45,21 @@
       { id: 'fly', name: 'FLY', key: '4', unlock: 95, duration: 5, cooldown: 30 },
     ],
 
+    // Things the runner destroys by landing on top of them. The runner's screen marks these with an arrow.
+    STOMPABLE: ['slime', 'bat', 'crusher', 'hopper', 'bullet'],
+
+    // Bricks share one counter: after `burst` of them (any mix), all brick items lock
+    // for `cooldown` seconds. Going that long without placing one resets the count.
+    BRICKS: { items: ['block', 'crumble'], burst: 5, cooldown: 2 },
+
     // "cooldown" is seconds before the builder can place that item again (0 = no wait).
     // For wind and fog it starts counting once the effect has ended.
     ITEMS: [
       { id: 'block', name: 'BLOCK', cost: 1, key: '1', cooldown: 0 },
       { id: 'crumble', name: 'CRUMBLE', cost: 1, key: '2', cooldown: 0 },
-      { id: 'spike', name: 'SPIKES', cost: 2, key: '3', cooldown: 1 },
+      { id: 'spike', name: 'SPIKES', cost: 2, key: '3', cooldown: 0 },
       { id: 'slime', name: 'SLIME', cost: 3, key: '4', cooldown: 3 },
-      { id: 'pit', name: 'PIT', cost: 3, key: '5', cooldown: 2 },
+      { id: 'pit', name: 'PIT', cost: 3, key: '5', cooldown: 0 },
       { id: 'bat', name: 'BAT', cost: 4, key: '6', cooldown: 4 },
       { id: 'boulder', name: 'BOULDER', cost: 4, key: '7', cooldown: 5 },
       { id: 'cannon', name: 'CANNON', cost: 6, key: '8', cooldown: 6 },

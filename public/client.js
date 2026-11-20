@@ -13,6 +13,7 @@
     c: '#3cbcfc', b: '#0058f8', y: '#f8b800', r: '#d82800', m: '#881400',
     g: '#00a800', G: '#b8f818', p: '#6844fc', P: '#a488fc', n: '#ac7c00',
     N: '#503000', o: '#e45c10', s: '#fca044', t: '#f0d0b0',
+    B: '#3838a8', h: '#6868e8', // ninja garb and its highlight
   };
 
   function sprite(rows, flip) {
@@ -30,25 +31,27 @@
     return cv;
   }
 
+  // The runner: a ninja in indigo garb with a red headband (tails streaming
+  // behind), a strip of face showing through the mask, and a red sash.
   const HERO_TOP = [
     '................',
-    '....kkkkkkkk....',
-    '...kllllllllk...',
-    '...kllcccccck...',
-    '...kllcwkcwkk...',
-    '...kllcccccck...',
-    '...kllllllllk...',
-    '....kkkkkkkk....',
-    '..kkbbbbbbbbkk..',
-    '..kykbbyybbkyk..',
-    '..kkkbbyybbkkk..',
-    '....kbbbbbbk....',
-    '....kkkkkkkk....',
+    '.....kkkkkk.....',
+    '....kBhhBBBBk...',
+    '.rrkBhBBBBBBk...',
+    'r.rkrrrrrrrrk...',
+    '...kBttwktwkk...',
+    '...kBBBBBBBBk...',
+    '....kkBBBBkk....',
+    '...kBhBBBBBBk...',
+    '..kBkBBBBBBkBk..',
+    '..ktkBrrrrBktk..',
+    '...kkBBrBBBkk...',
+    '....kBBkkBBk....',
   ];
   const HERO_LEGS = {
-    stand: ['....kdk..kdk....', '....kdk..kdk....', '....kkk..kkk....'],
-    run: ['...kdk....kdk...', '..kdk......kdk..', '..kkk......kkk..'],
-    jump: ['...kdk....kdk...', '...kkk....kkk...', '................'],
+    stand: ['....kBk..kBk....', '....kBk..kBk....', '....kkk..kkk....'],
+    run: ['...kBk....kBk...', '..kBk......kBk..', '..kkk......kkk..'],
+    jump: ['...kBk....kBk...', '...kkk....kkk...', '................'],
   };
   const hero = {};
   for (const pose of Object.keys(HERO_LEGS)) {
@@ -469,6 +472,7 @@
     hopper: 'Leaps toward the runner. Can be stomped.',
     thorn: 'A slime with spikes on top. Cannot be stomped.',
   };
+  const STOMP_WIDTH = { slime: 20, bat: 20, crusher: 14, hopper: 14, bullet: 12 }; // for centring the stomp arrow
   const GLOBAL_ITEMS = { wind: 1, fog: 1 }; // affect the whole screen, not one spot
 
   // ------------------------------------------------------------------
@@ -498,6 +502,7 @@
   const SFX = {
     jump: () => tone(330, 0.15, 'square', 0.07, 660),
     jump2: () => tone(494, 0.15, 'square', 0.07, 988),
+    walljump: () => { tone(196, 0.05, 'square', 0.09); tone(587, 0.16, 'square', 0.07, 1175, 0.04); },
     stomp: () => tone(200, 0.12, 'square', 0.1, 80),
     hurt: () => { tone(220, 0.25, 'sawtooth', 0.12, 55); },
     place: () => tone(880, 0.05, 'square', 0.04),
@@ -717,7 +722,9 @@
       cv.width = 16; cv.height = 16;
       cv.getContext('2d').drawImage(ICONS[item.id], 0, 0);
       b.appendChild(cv);
-      b.insertAdjacentHTML('beforeend', `<span class="hotkey">${item.key}</span><span class="cost">${item.cost}</span><i class="cd"></i>`);
+      // bricks get a row of pips: how many more can go down before the shared pause
+      const pips = C.BRICKS.items.includes(item.id) ? `<span class="pips">${'<i></i>'.repeat(C.BRICKS.burst)}</span>` : '';
+      b.insertAdjacentHTML('beforeend', `<span class="hotkey">${item.key}</span><span class="cost">${item.cost}</span>${pips}<i class="cd"></i>`);
       b.onclick = () => { selected = item.id; };
       el.appendChild(b);
     }
@@ -799,9 +806,11 @@
         b.classList.toggle('sel', item.id === selected);
         b.classList.toggle('poor', s.credits < item.cost || s.cds[i] > 0);
         b.lastChild.style.height = s.cds[i] * 100 + '%'; // recharge shade drains away
+        const pips = b.querySelector('.pips');
+        if (pips) for (let n = 0; n < pips.children.length; n++) pips.children[n].classList.toggle('on', n < s.bricks);
       });
       const sel = C.ITEMS.find((i) => i.id === selected);
-      const info = `<b>${sel.name}</b> &middot; ${sel.cost} credits${sel.cooldown ? ` &middot; ${sel.cooldown}s recharge` : ''} &middot; ${ABOUT[sel.id]}`;
+      const info = `<b>${sel.name}</b> &middot; ${sel.cost} credit${sel.cost === 1 ? '' : 's'}${sel.cooldown ? ` &middot; ${sel.cooldown}s recharge` : ''}${C.BRICKS.items.includes(sel.id) ? ` &middot; ${C.BRICKS.cooldown}s pause after every ${C.BRICKS.burst} bricks` : ''} &middot; ${ABOUT[sel.id]}`;
       if (info !== lastInfo) { lastInfo = info; $('itemInfo').innerHTML = info; }
     }
   }
@@ -939,29 +948,191 @@
     return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
   }
 
-  function drawBackdrop(cam, W) {
-    ctx.fillStyle = '#5c94fc';
-    ctx.fillRect(0, 0, W, H);
-    // clouds
-    ctx.fillStyle = '#fcfcfc';
-    const cx = cam * 0.2;
-    for (let i = Math.floor(cx / 90) - 1; i <= Math.floor((cx + W) / 90); i++) {
-      const x = Math.floor(i * 90 + hash(i) * 50 - cx);
-      const y = 16 + Math.floor(hash(i + 999) * 60);
-      ctx.fillRect(x + 4, y, 20, 4);
-      ctx.fillRect(x, y + 4, 32, 6);
-      ctx.fillRect(x + 6, y + 10, 18, 2);
-    }
-    // far hills
-    const hx = cam * 0.45;
-    for (let i = Math.floor(hx / 70) - 1; i <= Math.floor((hx + W) / 70); i++) {
-      const x = Math.floor(i * 70 + hash(i + 50) * 30 - hx);
-      const h = 24 + Math.floor(hash(i + 7) * 40);
-      for (let s = 0; s < h; s += 4) {
-        const w = (h - s) * 1.6;
-        ctx.fillStyle = s > h - 12 ? '#58d854' : '#00a844';
-        ctx.fillRect(Math.floor(x + 40 - w / 2), C.GROUND_ROW * T - s - 4, Math.floor(w), 4);
+  // ---- Backgrounds -------------------------------------------------
+  // Five scenes, each a place and a time of day. A round runs through them in
+  // a random order (the same for both players), fading from one to the next.
+  //   sky    four colour bands, top to bottom
+  //   orb    sun or moon: [colour, x, y, radius, crescent?]
+  //   far    what stands on the horizon, drawn by FAR[...] below
+  //   tint   a wash of light over the whole world: [r, g, b, strength]
+  const SCENES = [
+    { name: 'meadow at midday', sky: ['#3c8cf0', '#5c94fc', '#7cacfc', '#a4c8fc'], orb: ['#f8e078', 206, 30, 9],
+      clouds: '#fcfcfc', far: 'hills', c1: '#00a844', c2: '#58d854', tint: [0, 0, 0, 0] },
+    { name: 'desert at sunset', sky: ['#582878', '#c84c5c', '#f08c3c', '#f8c868'], orb: ['#fce0a0', 150, 150, 20],
+      clouds: '#f8a878', far: 'mesas', c1: '#a04020', c2: '#d06830', tint: [255, 110, 30, 0.1] },
+    { name: 'city at night', sky: ['#080c28', '#0c1438', '#141c50', '#202868'], orb: ['#e8e8d0', 200, 36, 10, true],
+      stars: true, far: 'city', c1: '#080818', c2: '#f8d878', tint: [8, 12, 70, 0.26] },
+    { name: 'mountains at dawn', sky: ['#6858b8', '#c878b0', '#f8a0a0', '#fcd8b8'], orb: ['#fcf0c0', 60, 170, 14],
+      clouds: '#fce0e0', far: 'peaks', c1: '#58608c', c2: '#fcfcfc', tint: [255, 150, 170, 0.07] },
+    { name: 'pine forest in the rain', sky: ['#48586c', '#607080', '#788898', '#98a8b0'],
+      clouds: '#3c4858', far: 'pines', c1: '#1c3828', c2: '#2c5038', rain: true, tint: [40, 60, 90, 0.14] },
+  ];
+
+  const FAR = {
+    hills(sc, cam, W, gy) {
+      const px = cam * 0.45;
+      for (let i = Math.floor(px / 70) - 1; i <= Math.floor((px + W) / 70); i++) {
+        const x = Math.floor(i * 70 + hash(i + 50) * 30 - px);
+        const h = 24 + Math.floor(hash(i + 7) * 40);
+        for (let s = 0; s < h; s += 4) {
+          const w = (h - s) * 1.6;
+          ctx.fillStyle = s > h - 12 ? sc.c2 : sc.c1;
+          ctx.fillRect(Math.floor(x + 40 - w / 2), gy - s - 4, Math.floor(w), 4);
+        }
       }
+    },
+    mesas(sc, cam, W, gy) { // flat-topped rock, in two tiers, with the odd cactus
+      const px = cam * 0.4;
+      for (let i = Math.floor(px / 110) - 1; i <= Math.floor((px + W) / 110); i++) {
+        const x = Math.floor(i * 110 + hash(i + 20) * 40 - px);
+        const w = 36 + Math.floor(hash(i + 21) * 44), h = 28 + Math.floor(hash(i + 22) * 46);
+        ctx.fillStyle = sc.c1;
+        ctx.fillRect(x, gy - h, w, h);
+        ctx.fillRect(x + 8, gy - h - 12, w - 20, 12);
+        ctx.fillStyle = sc.c2;
+        ctx.fillRect(x, gy - h, w, 3);
+        ctx.fillRect(x + 8, gy - h - 12, w - 20, 3);
+        ctx.fillRect(x + w - 4, gy - h + 3, 4, h - 3);
+      }
+      const qx = cam * 0.6;
+      ctx.fillStyle = '#285828';
+      for (let i = Math.floor(qx / 84) - 1; i <= Math.floor((qx + W) / 84); i++) {
+        const x = Math.floor(i * 84 + hash(i + 40) * 50 - qx);
+        ctx.fillRect(x + 4, gy - 18, 4, 18);
+        ctx.fillRect(x, gy - 13, 4, 3); ctx.fillRect(x, gy - 16, 2, 4);
+        ctx.fillRect(x + 8, gy - 10, 4, 3); ctx.fillRect(x + 10, gy - 14, 2, 5);
+      }
+    },
+    city(sc, cam, W, gy) { // skyline with lit windows
+      const px = cam * 0.4;
+      for (let i = Math.floor(px / 30) - 1; i <= Math.floor((px + W) / 30); i++) {
+        const x = Math.floor(i * 30 - px);
+        const w = 20 + Math.floor(hash(i + 60) * 10), h = 26 + Math.floor(hash(i + 61) * 84);
+        ctx.fillStyle = sc.c1;
+        ctx.fillRect(x, gy - h, w, h);
+        ctx.fillStyle = sc.c2;
+        for (let wy = 0; wy < Math.floor((h - 8) / 6); wy++) for (let wx = 0; wx < Math.floor((w - 4) / 5); wx++) {
+          if (hash(i * 131 + wy * 17 + wx * 7) > 0.62) ctx.fillRect(x + 3 + wx * 5, gy - h + 4 + wy * 6, 2, 3);
+        }
+      }
+    },
+    peaks(sc, cam, W, gy) { // two ranges of snow-capped mountains
+      for (const [par, seedOff, scale, shade] of [[0.25, 70, 1.25, 0.55], [0.42, 80, 1, 1]]) {
+        const px = cam * par;
+        for (let i = Math.floor(px / 90) - 1; i <= Math.floor((px + W) / 90); i++) {
+          const cx = Math.floor(i * 90 + hash(i + seedOff) * 40 - px) + 45;
+          const h = Math.floor((50 + hash(i + seedOff + 1) * 60) * scale);
+          for (let s = 0; s < h; s += 3) {
+            ctx.fillStyle = s < h * 0.28 ? sc.c2 : sc.c1;
+            ctx.globalAlpha *= shade;
+            ctx.fillRect(cx - Math.floor(s * 0.62), gy - h + s, Math.floor(s * 1.24) + 2, 3);
+            ctx.globalAlpha /= shade;
+          }
+        }
+      }
+    },
+    pines(sc, cam, W, gy) { // rows of pointed trees
+      for (const [par, gap, col, seedOff, tall] of [[0.35, 22, sc.c2, 90, 0.75], [0.55, 26, sc.c1, 95, 1]]) {
+        const px = cam * par;
+        ctx.fillStyle = col;
+        for (let i = Math.floor(px / gap) - 1; i <= Math.floor((px + W) / gap); i++) {
+          const cx = Math.floor(i * gap + hash(i + seedOff) * 10 - px) + 10;
+          const h = Math.floor((34 + hash(i + seedOff + 3) * 44) * tall);
+          for (let s = 0; s < h - 6; s += 2) {
+            const tier = (s % Math.ceil(h / 3)) + s * 0.25; // three overlapping skirts
+            ctx.fillRect(cx - Math.floor(tier * 0.5) - 1, gy - h + s, Math.floor(tier) + 2, 2);
+          }
+          ctx.fillRect(cx - 1, gy - 6, 3, 6);
+        }
+      }
+    },
+  };
+
+  function drawScene(sc, cam, W, tick) {
+    const gy = C.GROUND_ROW * T;
+    const band = Math.ceil(H / sc.sky.length);
+    sc.sky.forEach((col, i) => { ctx.fillStyle = col; ctx.fillRect(0, i * band, W, band); });
+    if (sc.stars) {
+      ctx.fillStyle = '#fcfcfc';
+      for (let i = 0; i < 70; i++) {
+        const x = Math.floor(hash(i + 900) * 512);
+        if (x < W && ((tick >> 4) + i) % 9 !== 0) ctx.fillRect(x, Math.floor(hash(i + 950) * 150), 1, 1); // the missing ones twinkle
+      }
+    }
+    if (sc.orb) {
+      const [col, x, y, r, crescent] = sc.orb;
+      const disc = (cx, cy, colour) => {
+        ctx.fillStyle = colour;
+        for (let dy = -r; dy <= r; dy++) { const w = Math.floor(Math.sqrt(r * r - dy * dy)); ctx.fillRect(cx - w, cy + dy, w * 2, 1); }
+      };
+      disc(x, y, col);
+      if (crescent) disc(x + 5, y - 3, sc.sky[0]);
+    }
+    if (sc.clouds) {
+      ctx.fillStyle = sc.clouds;
+      const cx = cam * 0.2;
+      for (let i = Math.floor(cx / 90) - 1; i <= Math.floor((cx + W) / 90); i++) {
+        const x = Math.floor(i * 90 + hash(i) * 50 - cx);
+        const y = 16 + Math.floor(hash(i + 999) * 60);
+        ctx.fillRect(x + 4, y, 20, 4);
+        ctx.fillRect(x, y + 4, 32, 6);
+        ctx.fillRect(x + 6, y + 10, 18, 2);
+      }
+    }
+    FAR[sc.far](sc, cam, W, gy);
+  }
+
+  // Which scene is showing now, which is next, and how far the fade has got (0 to 1).
+  let sceneSeed = null;
+  let sceneOrder = [];
+  function sceneNow(s) {
+    if (s.seed !== sceneSeed) { // new round: shuffle the order from the round's seed
+      sceneSeed = s.seed;
+      sceneOrder = SCENES.map((_, i) => i);
+      let x = (s.seed || 1) >>> 0;
+      for (let i = sceneOrder.length - 1; i > 0; i--) {
+        x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+        const j = (x >>> 16) % (i + 1);
+        [sceneOrder[i], sceneOrder[j]] = [sceneOrder[j], sceneOrder[i]];
+      }
+    }
+    const period = C.SCENE_SECONDS * C.FPS, fade = 180;
+    const n = Math.floor(s.tick / period), into = s.tick % period;
+    return {
+      a: SCENES[sceneOrder[n % SCENES.length]],
+      b: SCENES[sceneOrder[(n + 1) % SCENES.length]],
+      blend: into > period - fade ? Math.round(((into - (period - fade)) / fade) * 10) / 10 : 0,
+    };
+  }
+
+  function drawBackdrop(scene, cam, W, tick) {
+    drawScene(scene.a, cam, W, tick);
+    if (scene.blend > 0) {
+      ctx.globalAlpha = scene.blend;
+      drawScene(scene.b, cam, W, tick);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // The time of day washes over everything in the world, and some scenes have weather.
+  function drawLight(scene, W, tick) {
+    const { a, b, blend } = scene;
+    const t = a.tint.map((v, i) => v + (b.tint[i] - v) * blend);
+    if (t[3] > 0.005) {
+      ctx.fillStyle = `rgba(${Math.round(t[0])}, ${Math.round(t[1])}, ${Math.round(t[2])}, ${t[3].toFixed(3)})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+    const rain = (a.rain ? 1 - blend : 0) + (b.rain ? blend : 0);
+    if (rain > 0) {
+      ctx.fillStyle = '#c8d8e8';
+      ctx.globalAlpha = 0.55 * rain;
+      for (let i = 0; i < W / 5; i++) {
+        const x = (hash(i + 700) * (W + 60) + tick * 1.5) % (W + 60) - 30;
+        const y = (hash(i + 750) * H + tick * (5 + (i % 3))) % H;
+        ctx.fillRect(Math.floor(x), Math.floor(y), 1, 4);
+        ctx.fillRect(Math.floor(x) + 1, Math.floor(y) + 4, 1, 3);
+      }
+      ctx.globalAlpha = 1;
     }
   }
 
@@ -973,7 +1144,8 @@
     const W = canvas.width;
     const cam = Math.floor(s.camX);
     const blink = (s.tick >> 2) & 1;
-    drawBackdrop(cam, W);
+    const scene = sceneNow(s);
+    drawBackdrop(scene, cam, W, s.tick);
 
     ctx.save();
     ctx.translate(-cam, 0);
@@ -1057,6 +1229,15 @@
         } else ctx.drawImage(boulder, ex - 1, ey - 2);
       }
       ctx.globalAlpha = 1;
+      // On the runner's screen, a little bobbing arrow sits over anything that can be stomped.
+      if (role === 'runner' && !spawning && C.STOMPABLE.includes(type)) {
+        const ax = ex + (STOMP_WIDTH[type] >> 1);
+        const ay = ey - 9 + Math.round(Math.sin((s.tick + id * 5) * 0.2) * 1.5);
+        ctx.fillStyle = '#000';
+        ctx.fillRect(ax - 3, ay - 1, 7, 3); ctx.fillRect(ax - 2, ay + 2, 5, 1); ctx.fillRect(ax - 1, ay + 3, 3, 1);
+        ctx.fillStyle = '#f8b800';
+        ctx.fillRect(ax - 2, ay, 5, 1); ctx.fillRect(ax - 1, ay + 1, 3, 1); ctx.fillRect(ax, ay + 2, 1, 1);
+      }
     }
 
     // runner
@@ -1064,7 +1245,20 @@
     if (!(p.iv > 0 && blink) && !(s.phase === 'over' && s.winner === 'builder')) {
       const pose = !p.g ? 'jump' : Math.abs(p.vx) > 0.3 && ((s.tick >> 3) & 1) ? 'run' : 'stand';
       const px = Math.round(p.x) - 3, py = Math.round(p.y) - 2;
-      ctx.drawImage(hero[p.fly ? 'jump' : pose][p.f], px, py);
+      const img = hero[p.fly ? 'jump' : pose][p.f];
+      if (p.rot) { // mid-somersault: turned in quarter steps so the pixels stay square
+        ctx.save();
+        ctx.translate(px + 8, py + 8);
+        ctx.rotate(p.rot * Math.PI / 2);
+        ctx.drawImage(img, -8, -8);
+        ctx.restore();
+      } else ctx.drawImage(img, px, py);
+      if (p.ws) { // sliding down a wall: scuff marks trailing above the hands
+        ctx.fillStyle = '#fcfcfc';
+        const wx = p.ws > 0 ? px + 13 : px + 1;
+        ctx.fillRect(wx, py - 2 - (s.tick >> 1) % 4, 2, 2);
+        ctx.fillRect(wx, py - 7 - (s.tick >> 1) % 4, 1, 2);
+      }
       if (p.fly) { // jet flame
         ctx.fillStyle = blink ? '#f8b800' : '#d82800';
         ctx.fillRect(px + 5, py + 15, 6, blink ? 5 : 3);
@@ -1086,6 +1280,12 @@
         ctx.fillRect(a, b + 3 - h / 2, c - a, h);
         ctx.fillStyle = blink ? '#fcfcfc' : '#f8b800';
         ctx.fillRect(a, b + 2, c - a, 2);
+      } else if (k === 'puff') {
+        // dust kicked off the wall: spreads up and down the wall face and fades
+        const age = 12 - ttl;
+        ctx.fillStyle = ttl > 6 ? '#fcfcfc' : '#bcbcbc';
+        const sz = ttl > 4 ? 3 : 2;
+        for (const dy of [-1, 0, 1]) ctx.fillRect(Math.round(a - c * age * 0.4) - 1, Math.round(b + dy * (3 + age * 0.9)) - 1, sz, sz);
       } else if (k === 'boom') {
         // chunky expanding ring
         const rad = c * (1 - ttl / 24);
@@ -1100,6 +1300,7 @@
     }
     ctx.restore();
 
+    drawLight(scene, W, s.tick);
     if (s.wind > 0) { // streaks blowing back across the runner's screen
       ctx.fillStyle = '#fcfcfc';
       const span = C.VIEW_COLS * T + 40;

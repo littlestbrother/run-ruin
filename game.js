@@ -15,6 +15,10 @@ const RUN_MAX = 1.75;
 const FRICTION = 0.2;
 const JUMP_V = -5.4;
 const DOUBLE_JUMP_V = -4.6;
+const WALL_JUMP_V = -5.0;
+const WALL_KICK_TICKS = 8; // after kicking off a wall, steering is ignored this long so the kick carries
+const WALL_GRACE_TICKS = 6; // a wall still counts for this long after letting go of it
+const WALL_SLIDE_V = 1.2; // fall speed while pressing into a wall
 const FLY_SPEED = 2.4;
 const EXPLODE_RADIUS = 52;
 const CAMERA_LEAD = 112; // runner's furthest screen x before the camera follows
@@ -31,8 +35,10 @@ const GOAL = Symbol('goal');
 
 const SOLID_TILES = { block: true, crumble: true, cannon: true, flame: true };
 const FLOOR_TILES = { spike: true, mine: true, spring: true, ice: true, goo: true }; // must sit on something solid
+const BRICK = Object.fromEntries(C.BRICKS.items.map((id) => [id, true]));
+const BRICK_LOCK_TICKS = C.BRICKS.cooldown * C.FPS;
 const ENT_ITEMS = { slime: true, bat: true, saw: true, crusher: true, ghost: true, hopper: true, thorn: true };
-const STOMPABLE = { slime: true, bat: true, crusher: true, hopper: true, bullet: true }; // land on top to destroy
+const STOMPABLE = Object.fromEntries(C.STOMPABLE.map((t) => [t, true])); // land on top to destroy
 const WIND_PUSH = 0.7;
 const SPRING_V = -8.5;
 const SAW_REACH = 32; // how far a saw slides either side of where it was placed
@@ -60,6 +66,7 @@ class Game {
     this.phase = 'countdown'; // countdown -> play -> over
     this.countdown = C.COUNTDOWN_SECONDS * C.FPS;
     this.tick = 0;
+    this.seed = Math.floor(Math.random() * 1e9); // picks this round's order of backgrounds, same for both players
     this.timeLeft = C.ROUND_SECONDS * C.FPS;
     this.camX = 0;
     this.credits = C.START_CREDITS;
@@ -74,6 +81,9 @@ class Game {
     this.winner = null;
     this.input = { l: false, r: false, j: false };
     this.lifeTimer = randTicks(C.LIFE_FIRST_SECONDS); // ticks of play until the next +1 pickup
+    this.brickCount = 0; // bricks placed in the current burst
+    this.brickIdle = 0; // ticks since the last brick
+    this.brickLock = 0; // ticks until bricks can be placed again
     this.itemCd = {}; // item id -> ticks until the builder may place it again
     this.wind = 0; // ticks of headwind left
     this.fog = 0; // ticks of fog left
@@ -83,6 +93,9 @@ class Game {
       x: 40, y: GROUND_Y - 14, w: 10, h: 14, vx: 0, vy: 0,
       onGround: true, facing: 1, airJumps: 1, coyote: 0, jumpBuf: 0,
       invuln: 0, lives: C.LIVES, launch: 0,
+      lastWall: null, // column of the wall last kicked off; cleared on landing
+      wallLock: 0, sliding: 0, spin: null,
+      wallSide: 0, wallCol: 0, wallGrace: 0, // the wall being touched, or touched a moment ago
     };
   }
 
@@ -304,7 +317,7 @@ class Game {
     if (!item || !Number.isInteger(c) || !Number.isInteger(r)) return 'bad request';
     if (this.phase === 'over') return 'round over';
     if (this.credits < item.cost) return 'not enough credits';
-    if (this.itemCd[itemId] > 0) return 'recharging';
+    if (this.itemCd[itemId] > 0 || (BRICK[itemId] && this.brickLock > 0)) return 'recharging';
     let wait = item.cooldown;
     const camCol = Math.floor(this.camX / T);
     const p = this.player;
@@ -359,6 +372,10 @@ class Game {
     }
     this.credits -= item.cost;
     if (wait > 0) this.itemCd[itemId] = wait * C.FPS;
+    if (BRICK[itemId]) {
+      this.brickIdle = 0;
+      if (++this.brickCount >= C.BRICKS.burst) this.brickLock = BRICK_LOCK_TICKS;
+    }
     return null;
   }
 
@@ -409,6 +426,8 @@ class Game {
     if (this.phase === 'over') return;
     this.tick++;
     for (const id in this.itemCd) if (this.itemCd[id] > 0) this.itemCd[id]--;
+    if (this.brickLock > 0) { if (--this.brickLock === 0) this.brickCount = 0; }
+    else if (this.brickCount > 0 && ++this.brickIdle >= BRICK_LOCK_TICKS) this.brickCount = 0; // slow building never locks
     if (this.phase === 'countdown') {
       this.countdown--;
       if (this.countdown <= 0) { this.phase = 'play'; this.events.push('go'); }
@@ -459,6 +478,18 @@ class Game {
     this.events.push(winner === 'runner' ? 'win' : 'lose');
   }
 
+  // Which side the airborne runner is touching a wall on: -1 left, 1 right, 0 neither.
+  wallBeside(p) {
+    if (this.collides({ x: p.x - 1, y: p.y, w: p.w, h: p.h })) return -1;
+    if (this.collides({ x: p.x + 1, y: p.y, w: p.w, h: p.h })) return 1;
+    return 0;
+  }
+
+  // A somersault, shown in quarter turns. `dir` is 1 for clockwise.
+  startSpin(turns, dir) {
+    this.player.spin = { t: 0, total: turns > 1 ? 26 : 18, turns, dir };
+  }
+
   maxAirJumps() {
     return this.abil[ABILITY_INDEX.triple].active > 0 ? 2 : 1;
   }
@@ -467,6 +498,8 @@ class Game {
     const p = this.player, inp = this.input;
     const prevBottom = p.y + p.h;
     const flying = this.abil[ABILITY_INDEX.fly].active > 0;
+    if (p.spin && (++p.spin.t >= p.spin.total || p.onGround || flying)) p.spin = null;
+    p.sliding = 0;
 
     if (flying) {
       // Glide toward the mouse pointer; gravity is off.
@@ -491,20 +524,44 @@ class Game {
           else if (under.type === 'goo') max = 0.7;
         }
       }
-      if (inp.l && !inp.r) { p.vx = Math.max(p.vx - acc, -max); p.facing = -1; }
+      if (p.wallLock > 0) p.wallLock--; // mid wall-kick: keep flying away from the wall
+      else if (inp.l && !inp.r) { p.vx = Math.max(p.vx - acc, -max); p.facing = -1; }
       else if (inp.r && !inp.l) { p.vx = Math.min(p.vx + acc, max); p.facing = 1; }
       else if (p.vx > 0) p.vx = Math.max(0, p.vx - friction);
       else if (p.vx < 0) p.vx = Math.min(0, p.vx + friction);
 
-      if (p.onGround) { p.coyote = 6; p.airJumps = this.maxAirJumps(); } else if (p.coyote > 0) p.coyote--;
+      if (p.onGround) { p.coyote = 6; p.airJumps = this.maxAirJumps(); p.lastWall = null; } else if (p.coyote > 0) p.coyote--;
+      const wall = p.onGround || p.coyote > 0 ? 0 : this.wallBeside(p);
+      if (p.onGround) p.wallGrace = 0;
+      else if (wall) {
+        p.wallSide = wall; p.wallGrace = WALL_GRACE_TICKS;
+        // the column the 1-pixel probe in wallBeside() found solid
+        p.wallCol = wall < 0 ? Math.floor((p.x - 1) / T) : Math.floor((p.x + p.w + 0.999) / T);
+      } else if (p.wallGrace > 0) p.wallGrace--;
+      // A wall jump needs the runner to be pushing away from the wall. Pushing into it,
+      // or not steering, leaves the ordinary double jump alone for getting up and over.
+      const kick = p.wallGrace > 0 ? p.wallSide : 0;
+      const pushingAway = kick < 0 ? inp.r && !inp.l : kick > 0 ? inp.l && !inp.r : false;
       if (p.jumpBuf > 0) {
         if (p.coyote > 0) { p.vy = JUMP_V; p.coyote = 0; p.jumpBuf = 0; this.events.push('jump'); }
-        else if (p.airJumps > 0) { p.vy = DOUBLE_JUMP_V; p.airJumps--; p.jumpBuf = 0; this.events.push('jump2'); }
-        else p.jumpBuf--;
+        else if (kick && pushingAway && p.wallCol !== p.lastWall) {
+          // Wall jump: a free extra jump up and away, but never off the same wall twice running.
+          p.vy = WALL_JUMP_V; p.vx = -kick * RUN_MAX; p.facing = -kick;
+          p.wallLock = WALL_KICK_TICKS; p.launch = 14; p.lastWall = p.wallCol; p.wallGrace = 0; p.jumpBuf = 0;
+          this.startSpin(1, -kick);
+          this.fx.push({ k: 'puff', a: r1(kick < 0 ? p.x : p.x + p.w), b: r1(p.y + p.h - 2), c: kick, ttl: 12 });
+          this.events.push('walljump');
+        } else if (p.airJumps > 0) {
+          p.vy = DOUBLE_JUMP_V; p.airJumps--; p.jumpBuf = 0;
+          this.startSpin(p.airJumps === 0 && this.maxAirJumps() === 2 ? 2 : 1, p.facing); // the triple jump is a double somersault
+          this.events.push('jump2');
+        } else p.jumpBuf--;
       }
       if (p.launch > 0) p.launch--; // a spring launch can't be cut short
       else if (!inp.j && p.vy < -2) p.vy = -2; // letting go of jump early makes a short hop
       p.vy = Math.min(p.vy + GRAVITY, MAX_FALL);
+      // Pressing into a wall on the way down turns the fall into a slow slide.
+      if (wall && p.vy > WALL_SLIDE_V && (wall < 0 ? inp.l : inp.r)) { p.vy = WALL_SLIDE_V; p.sliding = wall; }
     }
 
     this.moveBody(p);
@@ -596,7 +653,7 @@ class Game {
   respawn() {
     const p = this.player;
     const start = Math.floor(this.camX / T) + 3;
-    p.vx = 0; p.vy = 0;
+    p.vx = 0; p.vy = 0; p.wallLock = 0; p.wallGrace = 0; p.spin = null; p.lastWall = null;
     let fallback = null;
     for (let c = start; c < start + 10; c++) {
       if (!this.solidAt(c, C.GROUND_ROW)) continue;
@@ -748,6 +805,7 @@ class Game {
       cd: Math.ceil(this.countdown / C.FPS),
       time: Math.ceil(this.timeLeft / C.FPS),
       tick: this.tick,
+      seed: this.seed,
       camX: r1(this.camX),
       credits: this.credits,
       rate: tier.perSecond,
@@ -756,6 +814,8 @@ class Game {
       p: {
         x: r1(p.x), y: r1(p.y), vx: r1(p.vx), f: p.facing, g: p.onGround ? 1 : 0, iv: p.invuln, l: p.lives,
         fly: this.abil[ABILITY_INDEX.fly].active > 0 ? 1 : 0,
+        rot: spinQuarter(p.spin), // somersault: quarter turns clockwise, 0-3
+        ws: p.sliding, // sliding down a wall on this side (-1 / 1)
       },
       // per move: [state, seconds] where state is L(ocked), A(ctive), C(ooling down) or R(eady)
       ab: this.abil.map((a, i) =>
@@ -768,9 +828,11 @@ class Game {
       wind: this.wind,
       // per item, in ITEMS order: how much of its recharge is left, 0 (ready) to 1
       cds: C.ITEMS.map((i) => {
-        const left = this.itemCd[i.id] || 0;
-        return left > 0 ? Math.max(0.01, Math.round((left / this.cdTotal(i)) * 100) / 100) : 0;
+        const left = BRICK[i.id] ? this.brickLock : this.itemCd[i.id] || 0;
+        const total = BRICK[i.id] ? BRICK_LOCK_TICKS : this.cdTotal(i);
+        return left > 0 ? Math.max(0.01, Math.round((left / total) * 100) / 100) : 0;
       }),
+      bricks: this.brickLock > 0 ? 0 : C.BRICKS.burst - this.brickCount, // how many more before the pause
       fog: this.fog,
       fx: this.fx.map((f) => [f.k, f.a, f.b, f.c, f.ttl]),
       ev: this.events,
@@ -793,6 +855,12 @@ function entExtra(e) {
   if (e.type === 'hopper') return e.onGround ? 0 : 1; // mid-leap
   if (e.type === 'ghost') return e.life < 90 ? 1 : 0; // fading out
   return 0;
+}
+
+function spinQuarter(spin) {
+  if (!spin) return 0;
+  const q = Math.floor((spin.t / spin.total) * spin.turns * 4) % 4;
+  return spin.dir > 0 ? q : (4 - q) % 4;
 }
 
 function randTicks([min, max]) {
