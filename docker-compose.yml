@@ -1,0 +1,9 @@
+services:
+  game:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # filled in by `npm run docker:start` so the lobby can show the join address
+      LAN_IP: ${LAN_IP:-}
+    restart: unless-stopped

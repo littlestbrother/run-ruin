@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RUN / RUIN</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="lobby" class="screen">
+  <h1>RUN <span class="slash">/</span> RUIN</h1>
+  <p class="tag">ONE RUNS. ONE RUINS. 2 MINUTES.</p>
+  <div class="roles">
+    <button id="pickRunner" class="role">
+      <canvas id="iconRunner" width="16" height="16"></canvas>
+      <b>RUNNER</b>
+      <span>Survive 2 minutes</span>
+      <em id="runnerStatus">OPEN</em>
+    </button>
+    <button id="pickBuilder" class="role">
+      <canvas id="iconBuilder" width="16" height="16"></canvas>
+      <b>BUILDER</b>
+      <span>Spend credits on traps</span>
+      <em id="builderStatus">OPEN</em>
+    </button>
+  </div>
+  <button id="readyBtn" class="big" disabled>READY</button>
+  <p id="lobbyMsg" class="msg"></p>
+  <div class="help">
+    <p><b>RUNNER</b> &larr; &rarr; or A D to move &middot; SPACE / W / &uarr; to jump (press again in the air to double jump) &middot; stomp slimes, bats, hoppers, crushers and cannonballs &middot; anything with spikes or teeth on top can't be stomped</p>
+    <p><b>+1</b> a heart appears now and then ahead of the runner: grab it for an extra life (up to 5)</p>
+    <p><b>RUNNER MOVES</b> unlock the longer you survive: 1 triple jump &middot; 2 laser vision &middot; 3 explode &middot; 4 fly (steer with the mouse)</p>
+    <p><b>BUILDER</b> pick an item (click it, or press the key shown on it) and click the map to place it ahead of the runner &middot; drag to paint &middot; most items need a moment to recharge &middot; credits come faster as the round goes on</p>
+    <p><b>M</b> toggles sound</p>
+    <p id="joinHint" class="hint"></p>
+  </div>
+</div>
+
+<div id="gameScreen" class="screen hidden">
+  <div id="hud">
+    <span id="hudLives"></span>
+    <span id="hudTime">2:00</span>
+    <span id="hudCredits"></span>
+  </div>
+  <div id="stage">
+    <canvas id="game" width="256" height="240"></canvas>
+    <div id="banner" class="hidden"></div>
+    <p id="deny" class="msg"></p>
+    <div id="endBox" class="hidden">
+      <h2 id="endTitle"></h2>
+      <p id="endSub"></p>
+      <div id="endButtons">
+        <button id="rematchBtn" class="big">REMATCH</button>
+        <button id="swapBtn" class="big">SWAP ROLES</button>
+      </div>
+    </div>
+  </div>
+  <div id="moves"></div>
+  <div id="build" class="hidden">
+    <div id="palette"></div>
+    <p id="itemInfo"></p>
+  </div>
+</div>
+
+<script src="shared.js"></script>
+<script src="client.js"></script>
+</body>
+</html>
