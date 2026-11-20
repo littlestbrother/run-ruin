@@ -59,6 +59,7 @@ button { font: inherit; text-transform: inherit; letter-spacing: inherit; color:
 #hudTime { text-align: center; font-size: 24px; color: #f8b800; }
 #hudTime.low { color: #d82800; }
 #hudLives { color: #d82800; letter-spacing: 2px; white-space: nowrap; }
+#hudLives .kills { margin-left: 14px; font-size: 12px; letter-spacing: 1px; color: #bcbcbc; }
 #hudCredits { text-align: right; color: #b8f818; white-space: nowrap; }
 #stage { position: relative; line-height: 0; border: 4px solid #fcfcfc; box-shadow: 6px 6px 0 #000; }
 #game { display: block; cursor: crosshair; }

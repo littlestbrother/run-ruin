@@ -41,6 +41,7 @@ const SOLID_TILES = { block: true, crumble: true, cannon: true, flame: true };
 const FLOOR_TILES = { spike: true, mine: true, spring: true, ice: true, goo: true }; // must sit on something solid
 const ENT_ITEMS = { slime: true, bat: true, saw: true, crusher: true, ghost: true, hopper: true, thorn: true };
 const STOMPABLE = Object.fromEntries(C.STOMPABLE.map((t) => [t, true])); // land on top to destroy
+const KILL_COUNTS = Object.fromEntries(C.KILL_COUNTS.map((t) => [t, true])); // destroying these counts toward a bonus life
 const WIND_PUSH = 0.7;
 const SPRING_V = -8.5;
 const SAW_REACH = 32; // how far a saw slides either side of where it was placed
@@ -88,14 +89,18 @@ class Game {
     this.fog = 0; // ticks of fog left
     this.players = [];
     for (let i = 0; i < (opts.runners === 2 ? 2 : 1); i++) this.players.push(this.makePlayer(i));
+    const team = this.players.length > 1;
+    this.lives = team ? C.TEAM_LIVES : C.LIVES; // one pool for the whole team
+    this.maxLives = team ? C.TEAM_MAX_LIVES : C.MAX_LIVES;
+    this.kills = 0; // enemies destroyed by the runners this round
   }
 
   makePlayer(index) {
     return {
-      index, out: false, // out = lost their last life; the round goes on while a team-mate survives
+      index, out: false, // out = the team has run out of lives
       x: 40 + index * 24, y: GROUND_Y - 14, w: 10, h: 14, vx: 0, vy: 0,
       onGround: true, facing: 1, airJumps: 1, coyote: 0, jumpBuf: 0,
-      invuln: 0, lives: C.LIVES, launch: 0,
+      invuln: 0, launch: 0,
       lastWall: null, // column of the wall last kicked off; cleared on landing
       wallLock: 0, sliding: 0, spin: null,
       wallSide: 0, wallCol: 0, wallGrace: 0, // the wall being touched, or touched a moment ago
@@ -373,7 +378,7 @@ class Game {
     const x1 = Math.min(startX, endX), x2 = Math.max(startX, endX);
     for (const e of this.ents) {
       if (e.warn > 0 || e.type === 'debris' || e.type === 'life') continue;
-      if (overlap(x1, y - 1, x2 - x1, 7, e.x, e.y, e.w, e.h)) e.dead = true;
+      if (!e.dead && overlap(x1, y - 1, x2 - x1, 7, e.x, e.y, e.w, e.h)) { e.dead = true; this.countKill(e); }
     }
     this.fx.push({ k: 'laser', a: r1(x1), b: r1(y), c: r1(x2), ttl: 12 });
     this.events.push('laser');
@@ -386,7 +391,7 @@ class Game {
     }
     for (const e of this.ents) {
       if (e.warn > 0 || e.type === 'life') continue;
-      if (Math.hypot(e.x + e.w / 2 - cx, e.y + e.h / 2 - cy) <= EXPLODE_RADIUS + 6) e.dead = true;
+      if (!e.dead && Math.hypot(e.x + e.w / 2 - cx, e.y + e.h / 2 - cy) <= EXPLODE_RADIUS + 6) { e.dead = true; this.countKill(e); }
     }
     p.invuln = Math.max(p.invuln, 30);
     this.fx.push({ k: 'boom', a: r1(cx), b: r1(cy), c: EXPLODE_RADIUS, ttl: 24 });
@@ -717,7 +722,7 @@ class Game {
     for (const e of this.ents) {
       if (e.type !== 'life' || e.dead || !overlap(p.x, p.y, p.w, p.h, e.x, e.y, e.w, e.h)) continue;
       e.dead = true;
-      if (p.lives < C.MAX_LIVES) p.lives++;
+      if (this.lives < this.maxLives) this.lives++;
       this.events.push('life');
     }
 
@@ -735,6 +740,7 @@ class Game {
       if (!overlap(p.x, p.y, p.w, p.h, e.x, e.y, e.w, e.h)) continue;
       if (STOMPABLE[e.type] && p.vy > 0 && prevBottom <= e.y + 7) {
         e.dead = true;
+        this.countKill(e);
         p.vy = -4.5;
         p.airJumps = this.maxAirJumps(p);
         this.events.push('stomp');
@@ -744,21 +750,30 @@ class Game {
     }
   }
 
+  // Every hit comes out of the team's shared lives. The builder wins when they are gone.
   loseLife(p, respawn) {
     if (this.phase === 'play' && (p.invuln === 0 || respawn)) {
       // A pit while already blinking from a hit still costs a life: pits are always deadly.
-      p.lives--;
+      this.lives--;
       this.events.push('hurt');
-      if (p.lives <= 0) {
-        // Out for the rest of the round. The builder only wins once every runner is out.
-        p.lives = 0; p.out = true;
-        this.events.push('out' + p.index);
-        if (!this.alive().length) this.finish('builder');
+      if (this.lives <= 0) {
+        this.lives = 0;
+        for (const q of this.players) q.out = true;
+        this.finish('builder');
         return;
       }
     }
     p.invuln = 120;
     if (respawn) this.respawn(p); else p.vy = -3.5;
+  }
+
+  // Called whenever a runner destroys something. Every tenth enemy earns the team a life.
+  countKill(e) {
+    if (!KILL_COUNTS[e.type]) return;
+    this.kills++;
+    if (this.kills % C.KILLS_PER_LIFE !== 0) return;
+    if (this.lives < this.maxLives) { this.lives++; this.events.push('bonus'); }
+    else this.events.push('bonusfull');
   }
 
   // Back onto solid ground near the left of the screen, preferring a spot the
@@ -924,9 +939,11 @@ class Game {
       rate: tier.perSecond,
       cap: tier.cap,
       winner: this.winner,
+      lives: this.lives, // the team's shared pool
+      kills: this.kills % C.KILLS_PER_LIFE, // progress toward the next bonus life
       // one entry per runner
       ps: this.players.map((p) => ({
-        x: r1(p.x), y: r1(p.y), vx: r1(p.vx), f: p.facing, g: p.onGround ? 1 : 0, iv: p.invuln, l: p.lives,
+        x: r1(p.x), y: r1(p.y), vx: r1(p.vx), f: p.facing, g: p.onGround ? 1 : 0, iv: p.invuln,
         out: p.out ? 1 : 0,
         fly: p.abil[ABILITY_INDEX.fly].active > 0 ? 1 : 0,
         rot: spinQuarter(p.spin), // somersault: quarter turns clockwise, 0-3

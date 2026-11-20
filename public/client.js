@@ -774,10 +774,8 @@
     for (const ev of s.ev) {
       if (ev === 'go') showBanner('GO!', 900, true);
       if (ev === 'life') showBanner('+1 LIFE!', 1500, true);
-      if (ev.startsWith('out')) {
-        if (s.ps.length > 1 && s.phase !== 'over') showBanner(`RUNNER ${+ev.slice(3) + 1} IS OUT!`, 2200, true);
-        continue;
-      }
+      if (ev === 'bonus') { showBanner(`${C.KILLS_PER_LIFE} KILLS: +1 LIFE!`, 1800, true); sfx('life'); continue; }
+      if (ev === 'bonusfull') { showBanner(`${C.KILLS_PER_LIFE} KILLS - LIVES ALREADY FULL`, 1800, true); continue; }
       if (ev === 'tier') showBanner(role === 'builder' ? `INCOME UP! +${s.rate}/SEC` : `BUILDER INCOME UP! +${s.rate}/SEC`, 2200, true);
       if (ev.startsWith('unlock')) {
         const a = C.ABILITIES[+ev.slice(6)];
@@ -795,9 +793,10 @@
   }
 
   function updateHud(s) {
-    // one set of hearts per runner, in that runner's colour
-    const lives = s.ps.map((q, i) => `<span style="color:${RUNNER_COLOURS[i]}">${s.ps.length > 1 ? `P${i + 1} ` : ''}`
-      + (q.out ? 'OUT' : '♥'.repeat(q.l) + '♡'.repeat(Math.max(0, C.LIVES - q.l))) + '</span>').join(' &nbsp; ');
+    // the team's shared lives, then progress toward the bonus life for destroying enemies
+    const full = s.ps.length > 1 ? C.TEAM_LIVES : C.LIVES;
+    const lives = '♥'.repeat(s.lives) + '♡'.repeat(Math.max(0, full - s.lives))
+      + `<span class="kills">KILLS ${s.kills}/${C.KILLS_PER_LIFE}</span>`;
     if (lives !== lastLives) { lastLives = lives; $('hudLives').innerHTML = lives; }
     const mine = s.ps[isRunner && s.ps[me] ? me : 0]; // whose moves the strip shows
     const t = Math.max(0, s.time);

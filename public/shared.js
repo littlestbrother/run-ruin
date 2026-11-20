@@ -12,8 +12,15 @@
     ROUND_SECONDS: 120,
     SCENE_SECONDS: 25, // how long each background / time of day lasts before fading to the next
     COUNTDOWN_SECONDS: 5,
-    LIVES: 3,
+    // Lives belong to the team: two runners draw on one shared pool.
+    LIVES: 3, // one runner
     MAX_LIVES: 5,
+    TEAM_LIVES: 5, // two runners, shared
+    TEAM_MAX_LIVES: 7,
+    // Every KILLS_PER_LIFE enemies the runners destroy (stomp, laser or explosion) earns a life.
+    // Cannonballs and boulders don't count: they aren't enemies, and cannons would hand out lives.
+    KILLS_PER_LIFE: 10,
+    KILL_COUNTS: ['slime', 'bat', 'hopper', 'thorn', 'ghost', 'crusher', 'saw'],
     // A +1 life pickup appears at a random moment in each of these windows (seconds).
     LIFE_FIRST_SECONDS: [15, 25],
     LIFE_EVERY_SECONDS: [20, 35],

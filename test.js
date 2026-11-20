@@ -23,7 +23,7 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   const g = started();
   run(g, C.ROUND_SECONDS * C.FPS + 5);
   assert.equal(g.winner, 'runner');
-  assert.equal(g.player.lives, C.LIVES);
+  assert.equal(g.lives, C.LIVES);
 }
 
 // Credits: spending, refusal when broke, and income that grows through the round.
@@ -112,7 +112,7 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
     if (g.player.onGround && g.player.vx === 0 && jumped) { g.setInput(false, true, true, true); jumped = false; }
   }
   assert.ok(g.player.x >= 13 * 16, 'runner got over the wall, x=' + g.player.x);
-  assert.equal(g.player.lives, C.LIVES);
+  assert.equal(g.lives, C.LIVES);
 }
 
 // The route check stays quick even when the builder has made a mess.
@@ -138,7 +138,7 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   run(g, C.SPAWN_TICKS + 1);
   g.setInput(false, true, false, false);
   run(g, 120);
-  assert.equal(g.player.lives, C.LIVES - 1);
+  assert.equal(g.lives, C.LIVES - 1);
 }
 {
   const g = started();
@@ -154,9 +154,9 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   const col = Math.floor(g.player.x / 16);
   assert.equal(g.place('boulder', col, 0), null);
   run(g, C.BOULDER_WARN_TICKS - 1);
-  assert.equal(g.player.lives, C.LIVES);
+  assert.equal(g.lives, C.LIVES);
   run(g, 120);
-  assert.equal(g.player.lives, C.LIVES - 1);
+  assert.equal(g.lives, C.LIVES - 1);
 }
 
 // Moves unlock in order as time passes, and can't be used before then.
@@ -213,7 +213,7 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   g.useAbility(AB.explode); run(g, 1);
   assert.deepEqual([...g.tiles.keys()], ['20,12']);
   assert.equal(g.ents.length, 0);
-  assert.equal(g.player.lives, C.LIVES);
+  assert.equal(g.lives, C.LIVES);
 }
 
 // Fly: heads for the mouse pointer, then gravity comes back.
@@ -250,7 +250,7 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   assert.equal(Math.max(...xs) - Math.min(...xs), 64);
   g.player.x = saw.x; g.player.y = saw.y - 20; g.player.vy = 2; g.player.invuln = 0;
   run(g, 20);
-  assert.equal(g.player.lives, C.LIVES - 1);
+  assert.equal(g.lives, C.LIVES - 1);
 }
 
 // Flame jet: harmless while off, burns two tiles up while on.
@@ -261,7 +261,7 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   const t = g.tiles.get('10,12');
   g.player.x = 10 * 16 + 3; g.player.y = 11 * 16 + 2 - 16; // standing in the air column above it
   let hurtAt = -1;
-  for (let i = 0; i < 150 && hurtAt < 0; i++) { g.player.y = 10 * 16; g.player.vy = 0; g.step(); if (g.player.lives < C.LIVES) hurtAt = t.age % 150; }
+  for (let i = 0; i < 150 && hurtAt < 0; i++) { g.player.y = 10 * 16; g.player.vy = 0; g.step(); if (g.lives < C.LIVES) hurtAt = t.age % 150; }
   assert.equal(hurtAt, 90);
 }
 
@@ -274,7 +274,7 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   assert.equal(cr.y, 96);
   g.player.x = 10 * 16 + 3;
   run(g, 40);
-  assert.equal(g.player.lives, C.LIVES - 1);
+  assert.equal(g.lives, C.LIVES - 1);
   assert.ok(cr.y > 150, 'crusher came down');
   g.player.x = 215; // walk on past it
   run(g, 180);
@@ -290,7 +290,7 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   g.player.x = cr.x + 2; g.player.y = cr.y - 30; g.player.vy = 1;
   run(g, 30);
   assert.equal(g.ents.length, 0);
-  assert.equal(g.player.lives, C.LIVES);
+  assert.equal(g.lives, C.LIVES);
 }
 
 // Ghost: floats through a wall toward the runner, and gives up after its time.
@@ -314,7 +314,7 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
   g.setInput(false, true, false, false);
   run(g, 90);
   assert.equal(g.tiles.size, 0);
-  assert.equal(g.player.lives, C.LIVES - 1);
+  assert.equal(g.lives, C.LIVES - 1);
 }
 
 // Spring: throws the runner far higher than a jump.
@@ -471,11 +471,11 @@ const unlockAll = (g) => g.abil.forEach((a) => { a.unlocked = true; });
     else { g.place(type, 14, 12); run(g, C.SPAWN_TICKS + 1); }
     const e = g.ents[0];
     g.player.invuln = 0;
-    for (let i = 0; i < 40 && g.ents.includes(e) && g.player.lives === C.LIVES; i++) {
+    for (let i = 0; i < 40 && g.ents.includes(e) && g.lives === C.LIVES; i++) {
       g.player.x = e.x + 2 + (e.vx || 0); g.player.y = Math.min(g.player.y, e.y - 16); g.player.vy = Math.max(g.player.vy, 1); g.player.vx = 0;
       g.step();
     }
-    return { killed: !g.ents.includes(e), lives: g.player.lives };
+    return { killed: !g.ents.includes(e), lives: g.lives };
   };
   assert.deepEqual(drop('bullet'), { killed: true, lives: C.LIVES });
   assert.deepEqual(drop('hopper'), { killed: true, lives: C.LIVES });
@@ -514,14 +514,14 @@ for (let round = 0; round < 30; round++) {
   assert.equal(g.place('block', c, r), "can't cover the +1");
   if (round === 0) {
     g.tiles.clear(); g.ents = [life];
-    g.player.lives = 1; g.player.invuln = 50; // can be grabbed even while blinking from a hit
+    g.lives = 1; g.player.invuln = 50; // can be grabbed even while blinking from a hit
     g.camX = life.x - 112; // as if the runner had walked there, rather than being put beyond the screen's edge
     g.player.x = life.x; g.player.y = life.y; g.step();
-    assert.equal(g.player.lives, 2);
+    assert.equal(g.lives, 2);
     assert.ok(!g.ents.includes(life));
-    g.player.lives = C.MAX_LIVES;
+    g.lives = C.MAX_LIVES;
     g.ents.push({ ...life, dead: false }); g.step();
-    assert.equal(g.player.lives, C.MAX_LIVES); // capped
+    assert.equal(g.lives, C.MAX_LIVES); // capped
   }
 }
 
@@ -562,7 +562,7 @@ for (let round = 0; round < 30; round++) {
   hold(false, true, 3);
   assert.equal(g.wallBeside(p), 0);
   assert.equal(press(false, true), 'walljump');
-  assert.equal(p.lives, C.LIVES);
+  assert.equal(g.lives, C.LIVES);
 }
 
 // Pushing into a wall and jumping is still the plain double jump, straight up.
@@ -656,34 +656,70 @@ const duo = () => {
   assert.deepEqual(s.ps.map((q) => q.ab[1][0]), ['C', 'C']);
 }
 
-// Last one standing: a runner who loses every life is out, the round carries on,
-// and the team still wins if the other lasts. The builder needs both.
+// Two runners share one pool of lives: a hit on either costs the team one, both keep
+// playing, and the builder wins when the pool is empty.
 {
   const g = duo();
   const [a, b] = g.players;
-  a.lives = 1; a.invuln = 0;
+  assert.equal(g.lives, C.TEAM_LIVES);
+  assert.equal(new Game().lives, C.LIVES);
   g.tiles.set('3,12', { c: 3, r: 12, type: 'spike', spawn: 0, timer: 0 });
-  a.x = 3 * 16 + 3; b.x = 120;
-  g.events = [];
+  a.x = 3 * 16 + 3; b.x = 120; a.invuln = 0; b.invuln = 0;
   g.step();
-  assert.ok(a.out && !b.out);
-  assert.ok(g.events.includes('out0'));
-  assert.equal(g.phase, 'play');
-  assert.equal(g.snapshot().ps[0].out, 1);
+  assert.equal(g.lives, C.TEAM_LIVES - 1); // runner 1 hit
+  assert.ok(!a.out && !b.out && a.invuln > 0 && b.invuln === 0);
+  b.x = 3 * 16 + 3; a.x = 120;
+  g.step();
+  assert.equal(g.lives, C.TEAM_LIVES - 2); // runner 2 hit: same pool
+  assert.equal(JSON.parse(JSON.stringify(g.snapshot())).lives, C.TEAM_LIVES - 2);
   g.tiles.clear();
-  const ax = a.x;
-  g.setInput(false, true, true, true, 0); run(g, 30);
-  assert.equal(a.x, ax); // someone who is out can't move or be hit any more
-  run(g, C.ROUND_SECONDS * C.FPS);
-  assert.equal(g.winner, 'runner');
+  g.lives = 1; a.invuln = 0; b.invuln = 0;
+  g.pits.add(Math.floor(a.x / 16)); g.pits.add(Math.floor(a.x / 16) + 1);
+  for (let i = 0; i < 200 && !g.winner; i++) g.step();
+  assert.equal(g.winner, 'builder');
+  assert.equal(g.lives, 0);
+  assert.ok(g.players.every((p) => p.out));
 
+  // the heart pickup tops up the shared pool, to the team's higher cap
   const h = duo();
-  h.players.forEach((p) => { p.lives = 1; p.invuln = 0; });
-  h.pits.add(2); h.pits.add(3); h.pits.add(4); h.pits.add(5);
-  h.players[0].x = 40; h.players[1].x = 70;
-  run(h, 120);
-  assert.equal(h.winner, 'builder');
-  assert.ok(h.players.every((p) => p.out));
+  h.lives = C.TEAM_MAX_LIVES - 1;
+  const heart = () => h.ents.push({ id: 99, type: 'life', x: h.players[1].x, y: h.players[1].y, w: 14, h: 12, vx: 0, vy: 0, spawn: 0, t: 0 });
+  heart(); h.step();
+  assert.equal(h.lives, C.TEAM_MAX_LIVES);
+  heart(); h.step();
+  assert.equal(h.lives, C.TEAM_MAX_LIVES);
+}
+
+// Every 10 enemies destroyed earns a life: stomps, laser and explosion all count; cannonballs don't.
+{
+  const g = rich(); unlockAll(g);
+  const p = g.player;
+  const surround = (type, n) => { for (let i = 0; i < n; i++) g.ents.push({ id: 1000 + i, type, x: p.x + (i % 5) * 4 - 8, y: p.y - 30 - Math.floor(i / 5) * 4, w: 4, h: 4, vx: 0, vy: 0, spawn: 0, t: 0, baseY: p.y - 30, dir: 1, home: p.x, life: 999, state: 'wait' }); };
+  const boom = () => { g.abil[AB.explode].cd = 0; g.events = []; assert.equal(g.useAbility(AB.explode), true); };
+  surround('bullet', 12); boom();
+  assert.equal(g.kills, 0); assert.equal(g.lives, C.LIVES); // cannonballs aren't enemies
+  g.ents = [];
+  surround('bat', 9); boom();
+  assert.equal(g.kills, 9); assert.equal(g.lives, C.LIVES);
+  assert.equal(g.snapshot().kills, 9);
+  g.ents = [];
+  // the tenth, by stomp
+  g.place('slime', Math.floor(p.x / 16) + 6, 12); run(g, C.SPAWN_TICKS + 1);
+  const slime = g.ents[0];
+  for (let i = 0; i < 40 && g.ents.includes(slime); i++) { p.x = slime.x + 4; p.y = Math.min(p.y, slime.y - 16); p.vy = Math.max(p.vy, 1); p.invuln = 0; g.camX = p.x - 112; g.step(); }
+  assert.equal(g.kills, 10);
+  assert.equal(g.lives, C.LIVES + 1);
+  assert.equal(g.snapshot().kills, 0); // counting starts again
+  // one of each kind that counts, by laser and explosion
+  g.ents = []; g.kills = 0;
+  C.KILL_COUNTS.forEach((type) => surround(type, 1));
+  boom();
+  assert.equal(g.kills, C.KILL_COUNTS.length);
+  // lives already full: the tenth kill gives nothing extra
+  g.ents = []; g.kills = 0; g.lives = C.MAX_LIVES;
+  surround('bat', 10); boom();
+  assert.equal(g.lives, C.MAX_LIVES);
+  assert.ok(g.events.includes('bonusfull'));
 }
 
 // The screen only jumps ahead as far as the runner at the back allows, and its
@@ -696,7 +732,7 @@ const duo = () => {
   assert.ok(front.x - g.camX > 200, 'the leader got well ahead on screen: ' + (front.x - g.camX));
   assert.ok(front.x <= g.camX + 16 * 16 - front.w + 0.01, 'but not off the right edge');
   assert.ok(back.x >= g.camX, 'and the one behind was not dragged off the left');
-  assert.equal(back.lives, C.LIVES);
+  assert.equal(g.lives, C.TEAM_LIVES);
   const cam = g.camX;
   g.setInput(false, true, false, false, 0); // now both run
   run(g, 240);
@@ -741,7 +777,7 @@ const duo = () => {
   for (let i = 0; i < 50; i++) { h.events = []; h.step(); hit = hit || h.events.includes('bump'); top = Math.min(top, d.y); }
   assert.ok(hit);
   assert.ok(top < c.y - d.h - 30, 'sprang well clear of the head, top y=' + top);
-  assert.deepEqual([c.lives, d.lives], [C.LIVES, C.LIVES]);
+  assert.equal(h.lives, C.TEAM_LIVES);
 }
 
 // ---------- the CPU builder ----------
@@ -763,7 +799,7 @@ const duo = () => {
     };
     const diffs = [];
     while (g.phase !== 'over') {
-      for (const p of g.players) { p.lives = C.LIVES; p.out = false; } // keep the round going
+      g.lives = C.TEAM_LIVES; // keep the round going
       if (g.tick % 600 === 0) diffs.push(bot.difficulty(g));
       const t0 = process.hrtime.bigint();
       bot.think(g); g.step();
